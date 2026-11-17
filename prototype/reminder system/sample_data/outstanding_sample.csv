@@ -1,0 +1,6 @@
+Bill No,Party Name,Bill Date,Due Date,Bill Amount,Pending Amount,Mobile,Area,Salesman
+INV2001,Sharma General Store,15-10-2026,30-10-2026,"12,500.00","12,500.00",9800000001,Model Town,Ravi
+INV2002,Sharma General Store,22-10-2026,06-11-2026,4000,1500,9800000001,Model Town,Ravi
+INV2003,Hotel Punjab Grill,26-10-2026,10-11-2026,15750,15750,9800000002,Civil Lines,Ravi
+INV2004,Gupta Kirana,26-09-2026,11-10-2026,6300,6300,9800000003,Sarabha Nagar,Aman
+INV2005,Fresh Mart,29-10-2026,13-11-2026,3900,3900,,Model Town,Aman

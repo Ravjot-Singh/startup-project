@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0e7c66">
+  <title>{% block title %}Payment Reminders{% endblock %} · {{ config.BUSINESS_NAME }}</title>
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="icon" href="/static/icon.svg">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+{% set path = request.url.path %}
+<header>
+  <span class="brand">{{ config.BUSINESS_NAME }}</span>
+  <nav>
+    <a href="/" class="{{ 'active' if path == '/' }}">Dashboard</a>
+    <a href="/customers" class="{{ 'active' if path.startswith('/customers') }}">Customers</a>
+    <a href="/import" class="{{ 'active' if path == '/import' }}">Import</a>
+    <a href="/reminders" class="{{ 'active' if path == '/reminders' }}">Reminders</a>
+    <a href="/call-list" class="{{ 'active' if path == '/call-list' }}">Call list</a>
+    <a href="/rules" class="{{ 'active' if path == '/rules' }}">Rules</a>
+  </nav>
+  <form method="post" action="/logout" class="inline"><button class="secondary">Log out</button></form>
+</header>
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>
