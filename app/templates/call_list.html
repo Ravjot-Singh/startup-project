@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Call list{% endblock %}
+{% block content %}
+<h1>Call list</h1>
+<p class="muted">Customers to follow up by phone or visit. Hand this to salesmen.</p>
+<form method="get" class="row" style="margin-bottom:12px">
+  <label>Overdue at least (days)<input type="number" name="days" value="{{ days }}" style="width:90px"></label>
+  <label>Area
+    <select name="area"><option value="">All</option>
+      {% for a in areas %}<option {{ 'selected' if a == area }}>{{ a }}</option>{% endfor %}
+    </select>
+  </label>
+  <button>Filter</button>
+</form>
+<div class="card table-wrap">
+  <table>
+    <tr><th>Customer</th><th>Phone</th><th>Area</th><th>Salesman</th><th class="num">Bills</th><th class="num">Oldest overdue</th><th class="num">Due</th></tr>
+    {% for r in rows %}
+    <tr>
+      <td><a href="/customers/{{ r.customer.id }}">{{ r.customer.display_name }}</a></td>
+      <td>{% if r.customer.phone %}<a href="tel:+{{ r.customer.phone }}">+{{ r.customer.phone }}</a>{% else %}—{% endif %}</td>
+      <td>{{ r.customer.area or '' }}</td>
+      <td>{{ r.customer.salesman or '' }}</td>
+      <td class="num">{{ r.count }}</td>
+      <td class="num overdue">{{ r.max_overdue }} days</td>
+      <td class="num">₹{{ r.total | inr }}</td>
+    </tr>
+    {% else %}<tr><td colspan="7" class="muted">Nobody is that far overdue.</td></tr>{% endfor %}
+  </table>
+</div>
+{% endblock %}
