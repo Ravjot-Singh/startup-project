@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app import config, settings
-from app.models import UNPAID_STATUSES, ImportBatch, InboundMessage, Invoice, Payment, ReminderLog
+from app.models import OPENING, UNPAID_STATUSES, ImportBatch, InboundMessage, Invoice, Receipt, ReminderLog
 from app.reminders.engine import PlannedReminder, call_list, plan_reminders
 
 CALL_AFTER_DAYS = 15
@@ -136,7 +136,11 @@ def build_today(db: Session, now: datetime) -> TodayView:
         r["total"] += i.balance
         r["overdue"] |= i.days_overdue(today) > 0
 
-    collected = db.scalar(select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.paid_on > today - timedelta(days=7)))
+    # Money received in the last 7 days: typed in here or newly shown as paid in Busy (not opening history)
+    collected = db.scalar(
+        select(func.coalesce(func.sum(Receipt.amount), 0))
+        .where(Receipt.received_on > today - timedelta(days=7), Receipt.received_on <= today, Receipt.source != OPENING)
+    )
     reply_q = select(InboundMessage).where(InboundMessage.handled.is_(False))
     replies = db.scalars(reply_q.options(joinedload(InboundMessage.customer)).order_by(InboundMessage.id.desc()).limit(5)).all()
     replies_count = db.scalar(select(func.count()).select_from(reply_q.subquery()))

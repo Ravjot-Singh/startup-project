@@ -24,7 +24,9 @@ from openpyxl import load_workbook
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import PAID, UNPAID_STATUSES, Customer, ImportBatch, Invoice
+from app import clock
+from app.models import UNPAID_STATUSES, Customer, ImportBatch, Invoice, fiscal_year_of
+from app.payments import apply_busy_paid, outstanding, record_fully_paid
 
 COLUMN_ALIASES: dict[str, list[str]] = {
     "invoice_no": [
@@ -75,6 +77,8 @@ class ImportResult:
     batch: ImportBatch
     column_map: dict[str, str]
     errors: list[str] = field(default_factory=list)
+    # Bills where payments recorded in the app are not in Busy yet (Busy shows less paid).
+    busy_behind: list[str] = field(default_factory=list)
 
 
 # ---------- parsing helpers ----------
@@ -307,9 +311,14 @@ def import_outstanding(
 ) -> ImportResult:
     """Upsert invoices from an outstanding report.
 
+    Bills are matched on bill number + financial year (Busy restarts numbering every April).
+    Paid amounts go through app.payments.apply_busy_paid, so a payment recorded in the app is
+    never lowered by an upload that doesn't have it yet.
+
     If full_outstanding_report is True, the file is treated as the complete list of unpaid bills:
     any unpaid invoice in the database that is NOT in the file is marked paid.
     """
+    today = today or clock.today()
     _, rows, cmap, header_line = read_table(filename, content, OUTSTANDING_REQUIRED)
     if "amount" not in cmap and "balance" not in cmap:
         raise ImportError_("Could not find a bill amount or pending/balance column in this file.")
@@ -319,7 +328,9 @@ def import_outstanding(
     db.add(batch)
     db.flush()
     errors: list[str] = []
-    seen_invoice_nos: set[str] = set()
+    seen: set[tuple[str, str]] = set()  # (bill no, financial year)
+    behind: list[str] = []
+    before = outstanding(db)  # to spot customers who become fully paid with this upload
     current_party: str | None = None
 
     for line_no, row in enumerate(rows, start=header_line + 1):
@@ -367,35 +378,46 @@ def import_outstanding(
                 db.flush()
 
                 due = parse_date(get(row, "due_date")) or inv_date + timedelta(days=customer.credit_days or 0)
-                inv = db.scalar(select(Invoice).where(Invoice.invoice_no == invoice_no))
-                if inv is None:
-                    inv = Invoice(invoice_no=invoice_no, customer=customer, amount_paid=Decimal("0"))
+                fy = fiscal_year_of(inv_date)
+                inv = db.scalar(select(Invoice).where(Invoice.invoice_no == invoice_no, Invoice.fiscal_year == fy))
+                first_seen = inv is None
+                if first_seen:
+                    inv = Invoice(invoice_no=invoice_no, fiscal_year=fy, customer=customer, amount_paid=Decimal("0"))
                     db.add(inv)
                 inv.customer = customer
                 inv.invoice_date = inv_date
                 inv.due_date = due
                 inv.amount = amount
-                if balance is not None:  # negative ("Cr") balance = advance: treat the bill as fully paid
-                    inv.amount_paid = min(amount, max(amount - balance, Decimal("0")))
-                elif received is not None:
-                    inv.amount_paid = min(amount, max(received, Decimal("0")))
                 inv.source_ref = f"import:{batch.id}"
-                inv.refresh_status()
-            seen_invoice_nos.add(invoice_no)
+                db.flush()
+                busy_paid = None
+                if balance is not None:  # negative ("Cr") balance = advance: treat the bill as fully paid
+                    busy_paid = amount - balance
+                elif received is not None:
+                    busy_paid = received
+                if busy_paid is not None:
+                    apply_busy_paid(db, inv, busy_paid, batch, today, first_seen)
+                else:
+                    inv.refresh_status()
+                if inv.busy_behind:
+                    behind.append(invoice_no)
+            seen.add((invoice_no, fy))
             batch.rows_ok += 1
         except (ImportError_, ValueError) as e:
             batch.rows_failed += 1
             errors.append(f"Row {line_no}: {e}")
 
     if full_outstanding_report and batch.rows_ok > 0:
-        stale = db.scalars(
-            select(Invoice).where(Invoice.status.in_(UNPAID_STATUSES), Invoice.invoice_no.not_in(seen_invoice_nos))
-        ).all()
-        for inv in stale:
-            inv.amount_paid = inv.amount
-            inv.status = PAID
+        stale = [
+            inv for inv in db.scalars(select(Invoice).where(Invoice.status.in_(UNPAID_STATUSES))).all()
+            if (inv.invoice_no, inv.fiscal_year) not in seen
+        ]
+        for inv in stale:  # gone from Busy's outstanding list = paid in full
+            apply_busy_paid(db, inv, Decimal(inv.amount), batch, today, first_seen=False)
         batch.marked_paid = len(stale)
+
+    record_fully_paid(db, before, before.keys())
 
     batch.errors = "\n".join(errors) if errors else None
     db.commit()
-    return ImportResult(batch=batch, column_map=cmap, errors=errors)
+    return ImportResult(batch=batch, column_map=cmap, errors=errors, busy_behind=behind)

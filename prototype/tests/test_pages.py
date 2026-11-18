@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from app import clock
-from app.models import Customer, InboundMessage, Invoice, Payment, ReminderRule
+from app.models import Customer, InboundMessage, Invoice, Payment, Receipt, ReminderRule
 from tests.conftest import csrf_from
 
 SAMPLE_CSV = Path(__file__).resolve().parent.parent / "sample_data" / "outstanding_sample.csv"
@@ -60,7 +60,7 @@ def test_customer_detail_and_missing_customer(logged_in, data):
 
 
 def test_post_without_csrf_token_is_rejected(logged_in, data):
-    url = f"/invoices/{data['invoice'].id}/payment"
+    url = f"/customers/{data['customer'].id}/payments"
     assert logged_in.post(url, data={"amount": "100"}).status_code == 403
     assert logged_in.post(url, data={"amount": "100", "csrf_token": "wrong"}).status_code == 403
 
@@ -71,12 +71,14 @@ def test_login_without_csrf_token_is_rejected(client):
 
 
 def test_record_payment(logged_in, db, data):
-    inv = data["invoice"]
-    r = logged_in.post(f"/invoices/{inv.id}/payment", data={"amount": "2,000", "mode": "upi", "csrf_token": logged_in.csrf})
+    inv, c = data["invoice"], data["customer"]
+    r = logged_in.post(f"/customers/{c.id}/payments", data={
+        "amount": "2,000", "mode": "upi", "received_on": clock.today().isoformat(), f"alloc_{inv.id}": "2000",
+        "csrf_token": logged_in.csrf})
     assert r.status_code == 303
     db.refresh(inv)
     assert inv.amount_paid == Decimal("2000") and inv.status == "partial"
-    assert db.query(Payment).count() == 1
+    assert db.query(Payment).count() == 1 and db.query(Receipt).one().mode == "upi"
 
 
 def test_dispute_toggle(logged_in, db, data):
@@ -201,9 +203,10 @@ def test_pause_and_resume_sending(logged_in, db):
 
 def test_flash_message_shows_once(logged_in, data):
     inv = data["invoice"]
-    page = logged_in.post(f"/invoices/{inv.id}/payment", data={"amount": "1000", "csrf_token": logged_in.csrf}, follow_redirects=True)
-    assert "Payment of ₹1,000 recorded for bill INV-1" in page.text
-    assert "Payment of ₹1,000 recorded" not in logged_in.get(f"/customers/{data['customer'].id}").text
+    page = logged_in.post(f"/customers/{data['customer'].id}/payments", data={
+        "amount": "1000", f"alloc_{inv.id}": "1000", "csrf_token": logged_in.csrf}, follow_redirects=True)
+    assert "₹1,000 received." in page.text
+    assert "₹1,000 received." not in logged_in.get(f"/customers/{data['customer'].id}").text
 
 
 def test_customers_missing_phone_filter(logged_in, db, data):
@@ -243,3 +246,55 @@ def test_every_form_has_labels_for_its_inputs(logged_in, data):
                 continue
             m = re.search(r'id="([^"]+)"', tag)
             assert m and m.group(1) in labelled, f"{url}: unlabelled field {tag}"
+
+
+# ---------- Phase 2: payments on the customer page ----------
+
+def _pay(client, cid, **fields):
+    return client.post(f"/customers/{cid}/payments", data={"csrf_token": client.csrf, **fields})
+
+
+def test_payment_mistake_shows_message_and_keeps_what_was_typed(logged_in, db, data):
+    c, inv = data["customer"], data["invoice"]
+    r = _pay(logged_in, c.id, amount="9000", note="cheque 4411", **{f"alloc_{inv.id}": "6000"})
+    assert r.status_code == 400
+    assert "only has ₹5,000.00 left" in r.text
+    assert 'value="9000"' in r.text and 'value="cheque 4411"' in r.text and 'value="6000"' in r.text
+    assert db.query(Receipt).count() == 0
+
+
+def test_payment_date_in_future_refused(logged_in, data):
+    from datetime import timedelta
+
+    tomorrow = (clock.today() + timedelta(days=1)).isoformat()
+    r = _pay(logged_in, data["customer"].id, amount="100", received_on=tomorrow)
+    assert r.status_code == 400 and "be in the future" in r.text
+
+
+def test_leftover_becomes_credit_then_used_on_a_bill(logged_in, db, data):
+    c, inv = data["customer"], data["invoice"]
+    page = _pay(logged_in, c.id, amount="6000", **{f"alloc_{inv.id}": "4000"})
+    assert page.status_code == 303
+    html = logged_in.get(f"/customers/{c.id}").text
+    assert "₹2,000 kept as credit" in html and "Use ₹2,000 credit" in html
+    r = logged_in.post(f"/customers/{c.id}/credit", data={"csrf_token": logged_in.csrf, f"alloc_{inv.id}": "1000"})
+    assert r.status_code == 303
+    db.refresh(inv)
+    assert inv.status == "paid" and inv.balance == 0
+
+
+def test_undo_payment_from_customer_page(logged_in, db, data):
+    c, inv = data["customer"], data["invoice"]
+    _pay(logged_in, c.id, amount="1500", **{f"alloc_{inv.id}": "1500"})
+    rid = db.query(Receipt).one().id
+    r = logged_in.post(f"/receipts/{rid}/undo", data={"csrf_token": logged_in.csrf}, follow_redirects=True)
+    assert "Payment of ₹1,500 removed." in r.text
+    db.refresh(inv)
+    assert inv.amount_paid == 0 and inv.status == "open"
+
+
+def test_collected_on_today_page_counts_new_payments(logged_in, data):
+    c, inv = data["customer"], data["invoice"]
+    _pay(logged_in, c.id, amount="1234", **{f"alloc_{inv.id}": "1234"})
+    html = logged_in.get("/").text
+    assert html.index("₹1,234") < html.index("Due to you")

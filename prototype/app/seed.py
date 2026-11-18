@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app import clock
 from app.db import SessionLocal, init_db
-from app.models import Customer, Invoice, ReminderRule
+from app.models import OPENING, Customer, Invoice, Payment, Receipt, ReminderRule
 
 DEFAULT_RULES = [
     # name, offset_days, template, notify_salesman, escalate_to_owner
@@ -77,6 +77,9 @@ def seed_demo(db: Session, today: date | None = None) -> None:
         )
         inv.refresh_status()
         db.add(inv)
+        if paid:
+            r = Receipt(customer=customers[ci], amount=Decimal(paid), received_on=today, mode="busy", source=OPENING)
+            db.add_all([r, Payment(receipt=r, invoice=inv, amount=Decimal(paid))])
     db.commit()
 
 

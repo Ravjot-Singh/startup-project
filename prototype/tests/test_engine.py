@@ -3,7 +3,8 @@ from decimal import Decimal
 
 from sqlalchemy import select
 
-from app.models import Customer, Invoice, Payment, ReminderLog
+from app.models import Customer, Invoice, ReminderLog
+from app.payments import record_payment
 from app.reminders.engine import call_list, run_reminders
 from app.whatsapp.provider import DryRunProvider, SendResult
 
@@ -101,10 +102,7 @@ def test_paid_invoices_ignored(db):
 def test_skip_if_payment_recorded_today(db):
     c = make_customer(db)
     inv = make_invoice(db, c, "INV1", 3, amount=1000)
-    db.add(Payment(invoice=inv, amount=Decimal(200), paid_on=TODAY))
-    inv.amount_paid = Decimal(200)
-    inv.refresh_status()
-    db.commit()
+    record_payment(db, c, Decimal(200), TODAY, allocations={inv.id: Decimal(200)})
     summary, provider = run(db)
     assert provider.sent == [] and summary.skipped == 1
 

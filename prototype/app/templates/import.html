@@ -14,6 +14,9 @@
   {% if result.batch.marked_paid %}{{ result.batch.marked_paid }} older bill{{ 's' if result.batch.marked_paid != 1 }} marked paid.{% endif %}
   {% endif %}
   {% if result.errors %}{{ result.errors | length }} row{{ 's' if result.errors | length != 1 }} could not be read.{% endif %}
+  {% if result.busy_behind %}<p class="small">Payments you recorded here aren't in Busy yet for bill{{ 's' if result.busy_behind | length != 1 }}
+    {{ result.busy_behind[:10] | join(', ') }}{% if result.busy_behind | length > 10 %} and {{ result.busy_behind | length - 10 }} more{% endif %}.
+    Your figures are kept; enter the payments in Busy when you can.</p>{% endif %}
   <details>
     <summary class="small">Details</summary>
     <p class="small muted">Columns used: {% for k, v in result.column_map.items() %}{{ k }} ← “{{ v }}”{{ ', ' if not loop.last }}{% endfor %}</p>

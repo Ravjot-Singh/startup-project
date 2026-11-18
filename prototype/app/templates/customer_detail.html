@@ -22,8 +22,73 @@
 <section class="kpis" aria-label="Balance">
   <div class="kpi"><div class="label">Due</div><div class="value">₹{{ due | inr }}</div></div>
   <div class="kpi {{ 'danger' if overdue > 0 }}"><div class="label">Overdue</div><div class="value">₹{{ overdue | inr }}</div></div>
+  {% if credit > 0 %}
+  <div class="kpi ok"><div class="label">Credit</div><div class="value">₹{{ credit | inr }}</div><div class="hint">Not yet put against a bill</div></div>
+  {% else %}
   <div class="kpi"><div class="label">Credit days</div><div class="value">{{ c.credit_days }}</div></div>
+  {% endif %}
 </section>
+
+{% macro bill_split(prefix) %}
+  <fieldset class="split">
+    <legend>Which bills does it pay?</legend>
+    <p class="muted small">Enter an amount next to each bill it pays. Anything left over is kept as credit.</p>
+    <ul class="list">
+      {% for inv in owing %}
+      {% set od = inv.days_overdue(today) %}
+      <li>
+        <div class="grow">
+          <label for="{{ prefix }}-{{ inv.id }}" class="title">Bill {{ inv.invoice_no }}</label>
+          <div class="muted small">₹{{ inv.balance | inr }} left · <span class="{{ 'overdue' if od > 0 }}">{{ od | overdue_text }}</span>{% if inv.status == 'disputed' %} · disputed{% endif %}</div>
+        </div>
+        <div class="end split-input">
+          <input id="{{ prefix }}-{{ inv.id }}" name="alloc_{{ inv.id }}" inputmode="decimal" autocomplete="off"
+                 value="{{ values.get('alloc_' ~ inv.id, '') if prefix == 'pay' else '' }}" data-left="{{ inv.balance }}" placeholder="0">
+          <button type="button" class="quiet" data-fill="{{ prefix }}-{{ inv.id }}" aria-label="Fill bill {{ inv.invoice_no }}" hidden>Fill</button>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    <p class="small muted" data-summary aria-live="polite"></p>
+  </fieldset>
+{% endmacro %}
+
+<section class="card section" aria-labelledby="pay">
+  <h2 id="pay">Record a payment</h2>
+  <form method="post" action="/customers/{{ c.id }}/payments" class="stack" data-pay-form>{{ csrf_input(request) }}
+    <div class="form-grid">
+      <div class="field">
+        <label for="amount">Amount received (₹)</label>
+        <input id="amount" name="amount" inputmode="decimal" autocomplete="off" required value="{{ values.get('amount', '') }}" data-total>
+      </div>
+      <div class="field">
+        <label for="received_on">Received on</label>
+        <input id="received_on" name="received_on" type="date" max="{{ today.isoformat() }}" value="{{ values.get('received_on', today.isoformat()) }}" required>
+      </div>
+      <div class="field">
+        <label for="mode">Paid by</label>
+        <select id="mode" name="mode">{% for v, label in modes %}<option value="{{ v }}" {{ 'selected' if values.get('mode') == v }}>{{ label }}</option>{% endfor %}</select>
+      </div>
+      <div class="field">
+        <label for="note">Note <span class="help">(optional)</span></label>
+        <input id="note" name="note" maxlength="200" value="{{ values.get('note', '') }}" placeholder="e.g. cheque number">
+      </div>
+    </div>
+    {% if owing %}{{ bill_split('pay') }}{% endif %}
+    <div><button>Save payment</button></div>
+  </form>
+</section>
+
+{% if credit > 0 and owing %}
+<section class="card section" aria-labelledby="credit">
+  <h2 id="credit">Use ₹{{ credit | inr }} credit</h2>
+  <form method="post" action="/customers/{{ c.id }}/credit" class="stack" data-pay-form="credit">{{ csrf_input(request) }}
+    <input type="hidden" value="{{ credit }}" data-total>
+    {{ bill_split('credit') }}
+    <div><button class="secondary">Put credit against these bills</button></div>
+  </form>
+</section>
+{% endif %}
 
 <section class="card section" aria-labelledby="bills">
   <h2 id="bills">Bills</h2>
@@ -39,30 +104,19 @@
           {{ inv.invoice_date | when(today) }} · ₹{{ inv.amount | inr }}
           {% if unpaid %} · <span class="{{ 'overdue' if od > 0 }}">{{ od | overdue_text }}</span>{% endif %}
         </div>
+        {% if inv.busy_behind %}<div class="small"><span class="badge warn">Busy not updated yet</span> Busy shows ₹{{ inv.busy_paid | inr }} paid; you recorded ₹{{ inv.amount_paid | inr }}.</div>{% endif %}
       </div>
       <div class="end">
-        {% if unpaid %}<div class="money">₹{{ inv.balance | inr }} left</div>{% endif %}
+        {% if inv.status != 'paid' %}<div class="money">₹{{ inv.balance | inr }} left</div>{% endif %}
         <span class="badge {{ inv.status }}">{{ inv.status | status_label }}</span>
       </div>
       {% if inv.status != 'paid' %}
       <div style="flex-basis: 100%">
         <details>
-          <summary>{{ 'Record payment or dispute' if unpaid else 'Dispute' }}</summary>
-          {% if unpaid %}
-          <form method="post" action="/invoices/{{ inv.id }}/payment" class="form-grid">{{ csrf_input(request) }}
-            <div class="field">
-              <label for="amt-{{ inv.id }}">Amount received (₹)</label>
-              <input id="amt-{{ inv.id }}" name="amount" inputmode="decimal" value="{{ inv.balance }}" required>
-            </div>
-            <div class="field">
-              <label for="mode-{{ inv.id }}">Paid by</label>
-              <select id="mode-{{ inv.id }}" name="mode">{% for v, label in modes %}<option value="{{ v }}">{{ label }}</option>{% endfor %}</select>
-            </div>
-            <div class="field"><button>Save payment</button></div>
-          </form>
-          {% endif %}
-          <form method="post" action="/invoices/{{ inv.id }}/dispute" class="section">{{ csrf_input(request) }}
-            <button class="secondary">{{ 'Clear dispute' if inv.status == 'disputed' else 'Mark as disputed (stop reminders for this bill)' }}</button>
+          <summary class="small">{{ 'Clear dispute' if inv.status == 'disputed' else 'Dispute this bill' }}</summary>
+          <form method="post" action="/invoices/{{ inv.id }}/dispute">{{ csrf_input(request) }}
+            <p class="muted small">{{ 'Reminders will include this bill again.' if inv.status == 'disputed' else 'A disputed bill is left out of reminders until you clear it.' }}</p>
+            <button class="secondary">{{ 'Clear dispute' if inv.status == 'disputed' else 'Mark as disputed' }}</button>
           </form>
         </details>
       </div>
@@ -75,7 +129,38 @@
   {% endif %}
 </section>
 
-<details class="card section" {{ 'open' if error }}>
+<section class="card section" aria-labelledby="received">
+  <h2 id="received">Payments received</h2>
+  {% if receipts %}
+  <ul class="list">
+    {% for r in receipts %}
+    <li style="flex-wrap: wrap">
+      <div class="grow">
+        <div class="title">₹{{ r.amount | inr }} · {{ r.received_on | when(today) }}</div>
+        <div class="muted small">
+          {% if r.source == 'import' %}Shown as paid in Busy{% else %}{{ dict(modes).get(r.mode, r.mode) }}{% endif %}
+          {%- for p in r.payments %} · Bill {{ p.invoice.invoice_no }} ₹{{ p.amount | inr }}{% endfor %}
+          {%- if r.unallocated > 0 %} · ₹{{ r.unallocated | inr }} credit{% endif %}
+          {%- if r.note %} · {{ r.note }}{% endif %}
+        </div>
+      </div>
+      {% if r.source == 'manual' %}
+      <details class="end">
+        <summary class="small">Undo</summary>
+        <form method="post" action="/receipts/{{ r.id }}/undo">{{ csrf_input(request) }}
+          <button class="danger">Remove this payment</button>
+        </form>
+      </details>
+      {% else %}<span class="badge info end">From Busy</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty">No payments recorded yet.</p>
+  {% endif %}
+</section>
+
+<details class="card section" {{ 'open' if error and not values }}>
   <summary>Contact and reminder settings</summary>
   <form method="post" action="/customers/{{ c.id }}/edit" class="form-grid">{{ csrf_input(request) }}
     <div class="field">
@@ -129,4 +214,5 @@
   <p class="empty">No messages yet.</p>
   {% endif %}
 </section>
+<script src="/static/pay.js?v={{ asset_v }}" defer></script>
 {% endblock %}

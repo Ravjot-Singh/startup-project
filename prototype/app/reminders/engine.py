@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from app import clock, config, settings
-from app.models import UNPAID_STATUSES, Customer, Invoice, Payment, ReminderLog, ReminderRule
+from app.models import OPENING, UNPAID_STATUSES, Customer, Invoice, Receipt, ReminderLog, ReminderRule
 from app.whatsapp.provider import WhatsAppProvider
 from app.whatsapp.templates import render
 
@@ -76,7 +76,7 @@ def _skip_reason(db: Session, customer: Customer, today: date) -> str | None:
     if not customer.phone:
         return "no phone number"
     paid_today = db.scalar(
-        select(Payment.id).join(Invoice).where(Invoice.customer_id == customer.id, Payment.paid_on == today).limit(1)
+        select(Receipt.id).where(Receipt.customer_id == customer.id, Receipt.received_on == today, Receipt.source != OPENING).limit(1)
     )
     if paid_today:
         return "payment recorded today"

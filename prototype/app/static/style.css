@@ -172,3 +172,10 @@ code { font-size: .875em; background: var(--surface-2); padding: 1px 6px; border
 .login { width: 100%; max-width: 380px; }
 .login .field { margin-bottom: 14px; }
 .login button { width: 100%; margin-top: 4px; }
+
+/* ---------- payment split ---------- */
+fieldset.split { border: 0; padding: 0; margin: 0; min-width: 0; }
+fieldset.split legend { font-weight: 650; padding: 0; margin-bottom: 4px; }
+.split-input { display: flex; align-items: center; gap: 4px; }
+.split-input input { width: 120px; text-align: right; }
+@media (max-width: 720px) { .split-input input { width: 96px; } }

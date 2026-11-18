@@ -1,26 +1,31 @@
 import hashlib
 import secrets
-from decimal import Decimal, InvalidOperation
+from datetime import date
+from decimal import Decimal
+from urllib.parse import quote_plus
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
-from app import clock, config, settings, ui
+from app import clock, config, payments, settings, ui
 from app.dashboard import build_today, sending_status
 from app.db import get_db
 from app.importers.outstanding import ImportError_, import_customers, import_outstanding, normalize_phone
 from app.models import (
     DISPUTED,
+    OPENING,
+    OWING_STATUSES,
     UNPAID_STATUSES,
     Customer,
     ImportBatch,
     InboundMessage,
     Invoice,
     Payment,
+    Receipt,
     ReminderLog,
     ReminderRule,
 )
@@ -39,9 +44,6 @@ templates.env.globals["csrf_input"] = csrf_input
 templates.env.globals["asset_v"] = hashlib.sha256((STATIC_DIR / "style.css").read_bytes()).hexdigest()[:10]
 
 router = APIRouter(dependencies=[Depends(csrf_protect)])
-
-PAYMENT_MODES = [("cash", "Cash"), ("upi", "UPI"), ("cheque", "Cheque"), ("bank", "Bank transfer")]
-
 
 def require_login(request: Request) -> str:
     user = request.session.get("user")
@@ -139,20 +141,31 @@ def customers(request: Request, q: str = "", missing: str = "", db: Session = De
     return render(request, "customers.html", {"customers": rows, "balances": balances, "q": q, "missing": missing})
 
 
-@router.get("/customers/{cid}", response_class=HTMLResponse)
-def customer_detail(cid: int, request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
-    c = db.get(Customer, cid) or _404()
-    invoices = db.scalars(select(Invoice).where(Invoice.customer_id == cid).order_by(Invoice.due_date.desc())).all()
-    logs = db.scalars(select(ReminderLog).where(ReminderLog.customer_id == cid).order_by(ReminderLog.id.desc()).limit(20)).all()
-    replies = db.scalars(select(InboundMessage).where(InboundMessage.customer_id == cid).order_by(InboundMessage.id.desc()).limit(20)).all()
+def _customer_page(request: Request, db: Session, c: Customer, error: str | None = None,
+                   values: dict | None = None, status_code: int = 200):
+    invoices = db.scalars(select(Invoice).where(Invoice.customer_id == c.id).order_by(Invoice.due_date.desc())).all()
+    logs = db.scalars(select(ReminderLog).where(ReminderLog.customer_id == c.id).order_by(ReminderLog.id.desc()).limit(20)).all()
+    replies = db.scalars(select(InboundMessage).where(InboundMessage.customer_id == c.id).order_by(InboundMessage.id.desc()).limit(20)).all()
+    receipts = db.scalars(
+        select(Receipt).options(selectinload(Receipt.payments).joinedload(Payment.invoice))
+        .where(Receipt.customer_id == c.id, Receipt.source != OPENING)
+        .order_by(Receipt.received_on.desc(), Receipt.id.desc()).limit(20)
+    ).all()
     today = clock.today()
-    unpaid = [i for i in invoices if i.status in UNPAID_STATUSES and i.balance > 0]
+    owing = sorted((i for i in invoices if i.status in OWING_STATUSES and i.balance > 0), key=lambda i: (i.due_date, i.id))
+    unpaid = [i for i in owing if i.status in UNPAID_STATUSES]
     return render(request, "customer_detail.html", {
-        "c": c, "invoices": invoices, "logs": logs, "replies": replies, "modes": PAYMENT_MODES,
+        "c": c, "invoices": invoices, "owing": owing, "logs": logs, "replies": replies, "receipts": receipts,
+        "modes": list(payments.MODES.items()), "credit": payments.customer_credit(db, c.id),
         "due": sum((i.balance for i in unpaid), Decimal(0)),
         "overdue": sum((i.balance for i in unpaid if i.days_overdue(today) > 0), Decimal(0)),
-        "error": request.query_params.get("error"),
-    })
+        "error": error or request.query_params.get("error"), "values": values or {},
+    }, status_code=status_code)
+
+
+@router.get("/customers/{cid}", response_class=HTMLResponse)
+def customer_detail(cid: int, request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
+    return _customer_page(request, db, db.get(Customer, cid) or _404())
 
 
 @router.post("/customers/{cid}/edit")
@@ -183,29 +196,64 @@ def customer_edit(
     return redirect(f"/customers/{cid}")
 
 
-@router.post("/invoices/{iid}/payment")
-def record_payment(
-    iid: int,
-    request: Request,
-    amount: str = Form(...),
-    mode: str = Form("cash"),
-    note: str = Form(""),
-    db: Session = Depends(get_db),
-    user: str = Depends(require_login),
-):
-    inv = db.get(Invoice, iid) or _404()
+def _allocations(form) -> dict[int, Decimal | None]:
+    """Form fields alloc_<bill id> = amount for that bill."""
+    out = {}
+    for key, value in form.multi_items():
+        if key.startswith("alloc_") and key[6:].isdigit() and isinstance(value, str):
+            out[int(key[6:])] = payments.parse_money(value)
+    return out
+
+
+@router.post("/customers/{cid}/payments", response_class=HTMLResponse)
+async def record_payment(cid: int, request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
+    c = db.get(Customer, cid) or _404()
+    form = await request.form()
+    values = {k: v for k, v in form.items() if isinstance(v, str) and k != "csrf_token"}
     try:
-        amt = Decimal(amount.replace(",", "").replace("₹", "").strip()).quantize(Decimal("0.01"))
-    except InvalidOperation:
-        amt = Decimal(0)
-    if amt <= 0:
-        return redirect(f"/customers/{inv.customer_id}?error=Enter+an+amount+greater+than+zero")
-    db.add(Payment(invoice=inv, amount=amt, paid_on=clock.today(), mode=mode, note=note or None))
-    inv.amount_paid = Decimal(inv.amount_paid or 0) + amt
-    inv.refresh_status()
-    db.commit()
-    flash(request, f"Payment of ₹{ui.inr(amt)} recorded for bill {inv.invoice_no}.")
-    return redirect(f"/customers/{inv.customer_id}")
+        amount = payments.parse_money(form.get("amount"))
+        try:
+            received_on = date.fromisoformat(str(form.get("received_on") or clock.today()))
+        except ValueError:
+            raise payments.PaymentError("Choose the date the money was received") from None
+        if received_on > clock.today():
+            raise payments.PaymentError("The date can't be in the future")
+        receipt = payments.record_payment(db, c, amount, received_on, str(form.get("mode") or "cash"),
+                                          str(form.get("note") or "").strip()[:200], _allocations(form))
+    except payments.PaymentError as e:
+        db.rollback()
+        return _customer_page(request, db, c, error=str(e), values=values, status_code=400)
+    split = receipt.allocated
+    text = f"₹{ui.inr(receipt.amount)} received."
+    if receipt.unallocated > 0:
+        text += f" ₹{ui.inr(receipt.unallocated)} kept as credit." if split > 0 else " Kept as credit; put it against bills when you're ready."
+    flash(request, text)
+    return redirect(f"/customers/{cid}")
+
+
+@router.post("/customers/{cid}/credit", response_class=HTMLResponse)
+async def use_credit(cid: int, request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
+    c = db.get(Customer, cid) or _404()
+    form = await request.form()
+    try:
+        used = payments.apply_credit(db, c, _allocations(form))
+    except payments.PaymentError as e:
+        db.rollback()
+        return _customer_page(request, db, c, error=str(e), status_code=400)
+    flash(request, f"₹{ui.inr(used)} of credit put against bills.")
+    return redirect(f"/customers/{cid}")
+
+
+@router.post("/receipts/{rid}/undo")
+def undo_payment(rid: int, request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
+    r = db.get(Receipt, rid) or _404()
+    cid, amount = r.customer_id, r.amount
+    try:
+        payments.undo_receipt(db, r)
+    except payments.PaymentError as e:
+        return redirect(f"/customers/{cid}?error=" + quote_plus(str(e)))
+    flash(request, f"Payment of ₹{ui.inr(amount)} removed.")
+    return redirect(f"/customers/{cid}")
 
 
 @router.post("/invoices/{iid}/dispute")

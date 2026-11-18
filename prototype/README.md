@@ -55,6 +55,12 @@ Free-tier staging (Render + Neon + cron-job.org): see [docs/deploy-staging.md](d
 3. Customers who are opted out, paused, have no number, or paid something today are skipped. Disputed bills
    are excluded. Nothing is sent twice for the same rule on the same day, or outside 9:00–20:00.
 4. **Call list** shows customers 15+ days overdue for salesmen to follow up.
+5. **Payments** (`app/payments.py`): the owner records money received on the customer page and chooses which
+   bills it pays; anything left over is kept as credit and can be put against bills later. Typed payments can
+   be undone. Busy uploads never lower a payment: if Busy shows more paid, the difference is added; if it
+   shows less, the app keeps its own figure and marks the bill "Busy not updated yet". Bills are identified
+   by bill number + financial year, since Busy restarts numbering every April. When a customer's dues reach
+   zero, a `fully_paid` event is recorded once (the thank-you / reorder messages build on it).
 
 ## Going live on WhatsApp
 

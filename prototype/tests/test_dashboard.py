@@ -5,7 +5,8 @@ from decimal import Decimal
 
 from app import settings
 from app.dashboard import build_today
-from app.models import Customer, ImportBatch, InboundMessage, Invoice, Payment, ReminderLog, ReminderRule
+from app.models import Customer, ImportBatch, InboundMessage, Invoice, Receipt, ReminderLog, ReminderRule
+from app.payments import record_payment
 from app.reminders.engine import run_reminders
 from app.whatsapp.provider import DryRunProvider
 
@@ -40,11 +41,10 @@ def test_money_numbers(db):
     a, b = cust(db, "A"), cust(db, "B", phone="919800000002")
     bill(db, a, "A1", days_overdue=10, amount=5000, paid=2000)  # 3000 overdue
     bill(db, a, "A2", days_overdue=-5, amount=1000)             # 1000 not yet due
-    paid = bill(db, b, "B1", days_overdue=-2, amount=4000)
-    db.add_all([
-        Payment(invoice=paid, amount=Decimal("700"), paid_on=TODAY - timedelta(days=6)),
-        Payment(invoice=paid, amount=Decimal("300"), paid_on=TODAY - timedelta(days=7)),  # outside last 7 days
-    ])
+    paid = bill(db, b, "B1", days_overdue=-2, amount=5000)
+    record_payment(db, b, Decimal("700"), TODAY - timedelta(days=6), allocations={paid.id: Decimal("700")})
+    record_payment(db, b, Decimal("300"), TODAY - timedelta(days=7), allocations={paid.id: Decimal("300")})  # too old
+    db.add(Receipt(customer=b, amount=Decimal("900"), received_on=TODAY, source="opening"))  # history, not new money
     db.commit()
     v = build_today(db, NOW)
     assert v.due_total == Decimal("8000")
