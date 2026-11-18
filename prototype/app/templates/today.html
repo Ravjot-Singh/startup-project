@@ -74,6 +74,17 @@
       <span class="badge failed end">Failed</span>
     </li>
     {% endfor %}
+    {% for pr in v.promises %}
+    <li>
+      <div class="grow">
+        <div class="title"><a href="/customers/{{ pr.message.customer.id }}">{{ pr.message.customer.display_name }}</a> promised to pay {{ pr.message.run_date | when_phrase(v.today, 'by') }}</div>
+        <div class="muted small">Still owes ₹{{ pr.owed | inr }} and nothing has come in since.{% if pr.message.note %} Note: {{ pr.message.note }}{% endif %}</div>
+      </div>
+      <form method="post" action="/messages/{{ pr.message.id }}/promise-done" class="end">{{ csrf_input(request) }}
+        <button class="secondary">Done</button>
+      </form>
+    </li>
+    {% endfor %}
     {% if v.to_call_count %}
     <li>
       <div class="grow">
@@ -111,23 +122,23 @@
     {% for o in v.outgoing %}
     <li>
       <div class="grow">
-        <div class="title"><a href="/customers/{{ o.plan.customer.id }}">{{ o.plan.customer.display_name }}</a></div>
-        <div class="muted small">{{ o.plan.rule.template_name | tone }} · {{ o.note }}</div>
+        <div class="title"><a href="/customers/{{ o.customer.id }}">{{ o.customer.display_name }}</a></div>
+        <div class="muted small">{{ o.label }} · {{ o.note }}</div>
       </div>
       <div class="end">
-        <div class="money">₹{{ o.plan.total | inr }}</div>
-        <span class="badge {{ {'sent':'ok','failed':'failed','skipped':'skipped','waiting':'pending','paused':'paused'}[o.state] }}">{{ {'sent':'Sent','failed':'Failed','skipped':'Not sent','waiting':'Waiting','paused':'Paused'}[o.state] }}</span>
+        <div class="money">₹{{ o.amount | inr }}</div>
+        <span class="badge {{ {'sent':'ok','failed':'failed','skipped':'skipped','waiting':'pending','paused':'paused','cancelled':'info'}[o.state] }}">{{ {'sent':'Sent','failed':'Failed','skipped':'Not sent','waiting':'Waiting','paused':'Paused','cancelled':'Not needed'}[o.state] }}</span>
       </div>
     </li>
     {% endfor %}
   </ul>
-  {% if not v.status.paused and v.outgoing | selectattr('state', 'equalto', 'waiting') | list %}
+  {% if not v.status.paused and v.has_waiting %}
   <form method="post" action="/reminders/run" class="section">{{ csrf_input(request) }}
     <button class="secondary">Send now instead of waiting</button>
   </form>
   {% endif %}
   {% else %}
-  <p class="empty">No reminders are due today.</p>
+  <p class="empty">Nothing to send today.</p>
   {% endif %}
 </section>
 

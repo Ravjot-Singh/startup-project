@@ -17,7 +17,8 @@ from sqlalchemy.orm import Session
 
 from app import config
 from app.db import get_db
-from app.models import Customer, InboundMessage, ReminderLog
+from app.models import FAILED, Customer, InboundMessage, Message
+from app.whatsapp.templates import START_WORDS, STOP_WORDS
 
 router = APIRouter(prefix="/webhooks")
 log = logging.getLogger("reminders.webhook")
@@ -33,17 +34,29 @@ def verify(request: Request):
     raise HTTPException(status_code=403, detail="verification failed")
 
 
+def apply_opt_out_words(customer: Customer | None, text: str) -> None:
+    """'STOP' switches the customer's WhatsApp messages off, 'START' back on. The reply is still kept
+    (and shown under Needs you) so the owner knows."""
+    word = " ".join((text or "").lower().replace(".", " ").replace("!", " ").split())
+    if customer is None:
+        return
+    if word in STOP_WORDS:
+        customer.whatsapp_opt_in = False
+    elif word in START_WORDS:
+        customer.whatsapp_opt_in = True
+
+
 def handle_payload(db: Session, payload: dict) -> None:
     for entry in payload.get("entry", []):
         for change in entry.get("changes", []):
             value = change.get("value", {})
             for st in value.get("statuses", []):
-                log = db.scalar(select(ReminderLog).where(ReminderLog.provider_msg_id == st.get("id")))
+                log = db.scalar(select(Message).where(Message.provider_msg_id == st.get("id")))
                 if not log:
                     continue
                 new = st.get("status")
                 if new == "failed":
-                    log.status = "failed"
+                    log.status = FAILED
                     errs = st.get("errors") or [{}]
                     log.error = f"{errs[0].get('code')}: {errs[0].get('title') or errs[0].get('message')}"
                 elif STATUS_ORDER.get(new, -1) > STATUS_ORDER.get(log.status, -1):
@@ -52,6 +65,7 @@ def handle_payload(db: Session, payload: dict) -> None:
                 phone = msg.get("from", "")
                 text = (msg.get("text") or {}).get("body") or (msg.get("button") or {}).get("text") or f"[{msg.get('type')}]"
                 customer = db.scalar(select(Customer).where(Customer.phone == phone))
+                apply_opt_out_words(customer, text)
                 db.add(InboundMessage(customer_id=customer.id if customer else None, phone=phone, text=text))
     db.commit()
 

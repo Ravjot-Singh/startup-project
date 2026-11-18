@@ -37,7 +37,7 @@
       <div class="grow">
         <div class="title"><a href="/customers/{{ l.customer.id }}">{{ l.customer.display_name }}</a></div>
         <details>
-          <summary class="small">{{ l.run_date | when(today) }} · {{ l.rule.template_name | tone }} · ₹{{ l.amount_due | inr }}</summary>
+          <summary class="small">{{ l.run_date | when(today) }} · {{ l | message_label }} · ₹{{ l.amount_due | inr }}</summary>
           <div class="message-text">{{ l.message_preview }}</div>
         </details>
         {% if l.error %}<div class="muted small">{{ l.error }}</div>{% endif %}

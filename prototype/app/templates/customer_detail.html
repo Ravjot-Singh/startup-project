@@ -90,6 +90,55 @@
 </section>
 {% endif %}
 
+<section class="card section" aria-labelledby="remind">
+  <div class="card-head">
+    <h2 id="remind">Reminders</h2>
+    <form method="post" action="/customers/{{ c.id }}/pause">{{ csrf_input(request) }}
+      <button class="quiet">{{ 'Resume reminders' if c.reminders_paused else 'Pause reminders' }}</button>
+    </form>
+  </div>
+  {% if upcoming %}
+  <ul class="list">
+    {% for m in upcoming %}
+    <li>
+      <div class="grow">
+        <div class="title">{{ 'Payment promised: reminder' if m.is_promise else ('Retrying' if m.attempts else 'Reminder') }} {{ m.scheduled_for | when_phrase(today) }} at {{ m.scheduled_for.strftime('%H:%M') }}</div>
+        <div class="muted small">{{ m.note or ('Tried ' ~ m.attempts ~ ' times: ' ~ m.error if m.attempts else 'Quotes whatever is owed at that time') }}</div>
+      </div>
+      <form method="post" action="/messages/{{ m.id }}/cancel" class="end">{{ csrf_input(request) }}
+        <button class="secondary" aria-label="Cancel reminder on {{ m.scheduled_for | when(today) }}">Cancel</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if due > 0 and c.phone and c.whatsapp_opt_in %}
+  <form method="post" action="/customers/{{ c.id }}/send-now" class="section">{{ csrf_input(request) }}
+    <button class="secondary">Send reminder now (₹{{ due | inr }})</button>
+  </form>
+  {% endif %}
+  <details class="section" {{ 'open' if values.get('on') }}>
+    <summary>Remind on a date and time</summary>
+    <form method="post" action="/customers/{{ c.id }}/remind-later" class="form-grid">{{ csrf_input(request) }}
+      <div class="field">
+        <label for="on">Date</label>
+        <input id="on" name="on" type="date" min="{{ today.isoformat() }}" value="{{ values.get('on', '') }}" required>
+      </div>
+      <div class="field">
+        <label for="at">Time</label>
+        <input id="at" name="at" type="time" value="{{ values.get('at', '11:00') }}" required>
+      </div>
+      <div class="field">
+        <label for="remind-note">Note for yourself <span class="help">(optional)</span></label>
+        <input id="remind-note" name="note" maxlength="200" value="{{ values.get('note', '') }}" placeholder="e.g. said he'll pay after Diwali">
+      </div>
+      <label class="check"><input type="checkbox" name="promise" value="true" {{ 'checked' if values.get('promise') }}> They promised to pay by this date</label>
+      <div class="field"><button>Set reminder</button></div>
+    </form>
+    <p class="muted small">If they promised and nothing comes in by then, it shows under Needs you on the Today page.</p>
+  </details>
+</section>
+
 <section class="card section" aria-labelledby="bills">
   <h2 id="bills">Bills</h2>
   {% if invoices %}
@@ -201,7 +250,7 @@
     <li>
       <div class="grow">
         <details>
-          <summary>{{ l.run_date | when(today) }}: ₹{{ l.amount_due | inr }} reminder</summary>
+          <summary>{{ l.run_date | when(today) }} · {{ l | message_label }} · ₹{{ l.amount_due | inr }}</summary>
           <div class="message-text">{{ l.message_preview }}</div>
           {% if l.error %}<p class="muted small">{{ l.error }}</p>{% endif %}
         </details>

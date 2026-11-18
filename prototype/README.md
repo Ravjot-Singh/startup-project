@@ -47,13 +47,20 @@ Free-tier staging (Render + Neon + cron-job.org): see [docs/deploy-staging.md](d
    - The Busy/Marg layouts are covered by tests built from typical report shapes
      (`tests/test_import_busy_marg.py`), **not yet from real exports**. Test with the distributor's actual
      files before going live.
-2. **Automatic runs** happen on every *tick*: `POST /jobs/tick`, called every 10 min by an external cron
-   on the free host, or by the built-in timer locally (`LOCAL_SCHEDULER`). From the run hour onwards
-   (default 10:00 India time, stored in the database settings), for each customer, if any unpaid bill is exactly
-   −3, 0, 3, 7, 15 or 30 days past due, one WhatsApp message goes out with the customer's total dues
-   (`app/reminders/engine.py`). The message's tone (which template) follows the customer's oldest unpaid bill. Rules can be switched on/off on the Rules page.
-3. Customers who are opted out, paused, have no number, or paid something today are skipped. Disputed bills
-   are excluded. Nothing is sent twice for the same rule on the same day, or outside 9:00–20:00.
+2. **Automatic reminders** go out on every *tick*: `POST /jobs/tick`, called every 10 min by an external cron
+   on the free host, or by the built-in timer locally (`LOCAL_SCHEDULER`). From the daily send time (default
+   10:00 India time) and only within the sending hours (default 9:00-20:00), both set on the Settings page:
+   each step of the reminder schedule (Settings → Reminder schedule; add, change, switch off or remove steps)
+   goes out once per bill when it reaches that many days from its due date. A missed day still goes out up to
+   3 days late. One message per customer covers all their unpaid bills: it names what is due now and the
+   total balance, after part payments, and its tone follows the oldest unpaid bill. At most one automatic
+   reminder per customer a day (`app/reminders/engine.py`).
+3. **The owner's own reminders** (customer page): *Send reminder now*, *Remind on a date and time* (optionally
+   marked as a payment promise: if nothing comes in by then, it shows under Needs you), and pause/resume for
+   one customer. *Pause all sending* on Settings holds everything automatic. Every message sits in one outbox
+   (`messages` table) and is written when it is sent, so it quotes the latest balance; a failed send is
+   retried on the next ticks, up to 3 tries. Opted-out, paused, numberless and paid-today customers are skipped;
+   disputed bills are left out. A reply of STOP switches a customer's messages off (START turns them back on).
 4. **Call list** shows customers 15+ days overdue for salesmen to follow up.
 5. **Payments** (`app/payments.py`): the owner records money received on the customer page and chooses which
    bills it pays; anything left over is kept as credit and can be put against bills later. Typed payments can

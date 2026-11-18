@@ -167,39 +167,78 @@ class CustomerEvent(Base):
 
 
 class ReminderRule(Base):
-    """Send a reminder when (today - due_date) == offset_days."""
+    """A step of the reminder schedule: remind when a bill is offset_days past its due date
+    (negative = before). If a day is missed, the step still goes out within GRACE_DAYS."""
 
     __tablename__ = "reminder_rules"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100))
     offset_days: Mapped[int] = mapped_column(Integer, unique=True)
-    template_name: Mapped[str] = mapped_column(String(100))  # Meta-approved template name
+    template_name: Mapped[str] = mapped_column(String(100))  # Meta-approved template name (the tone)
     notify_salesman: Mapped[bool] = mapped_column(Boolean, default=False)
     escalate_to_owner: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
-class ReminderLog(Base):
-    __tablename__ = "reminder_logs"
-    # One message per customer per rule per day; also stops a second run on the same day re-sending.
-    __table_args__ = (UniqueConstraint("customer_id", "rule_id", "run_date", name="uq_reminder_once"),)
+# Message kinds
+KIND_REMINDER = "reminder"  # automatic, from the schedule
+KIND_ONE_OFF = "one_off"    # the owner asked for a reminder on a date and time
+KIND_MANUAL = "manual"      # the owner pressed "Send reminder now"
+
+# Message statuses
+QUEUED = "queued"        # waiting to go out (scheduled_for may be later), or waiting to retry
+SENT_STATUSES = ("sent", "delivered", "read", "dryrun")
+FAILED = "failed"        # gave up after the last retry
+SKIPPED = "skipped"      # not sent: no number, opted out, paused customer...
+CANCELLED = "cancelled"  # nothing owed any more, or the owner cancelled it
+
+
+class Message(Base):
+    """Every WhatsApp message the app sends or will send (the outbox)."""
+
+    __tablename__ = "messages"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id"), index=True)
-    rule_id: Mapped[int] = mapped_column(ForeignKey("reminder_rules.id"))
-    run_date: Mapped[date] = mapped_column(Date)
-    invoice_nos: Mapped[str] = mapped_column(Text)  # comma separated invoice numbers covered
-    amount_due: Mapped[Decimal] = mapped_column(Numeric(12, 2))
-    message_preview: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(String(20), default=KIND_REMINDER, index=True)
+    rule_id: Mapped[int | None] = mapped_column(ForeignKey("reminder_rules.id"))
+    template_name: Mapped[str | None] = mapped_column(String(100))
+    run_date: Mapped[date] = mapped_column(Date, index=True)  # the day it is for
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime, index=True)  # not before this time
+    invoice_nos: Mapped[str] = mapped_column(Text, default="")  # bills mentioned, comma separated
+    amount_due: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
+    message_preview: Mapped[str] = mapped_column(Text, default="")
+    note: Mapped[str | None] = mapped_column(String(200))  # the owner's note on a one-off reminder
+    is_promise: Mapped[bool] = mapped_column(Boolean, default=False)  # customer promised to pay by this date
     sent_at: Mapped[datetime | None] = mapped_column(DateTime)
     provider_msg_id: Mapped[str | None] = mapped_column(String(200), index=True)
-    status: Mapped[str] = mapped_column(String(20), default="queued")  # queued/sent/delivered/read/failed/dryrun
+    status: Mapped[str] = mapped_column(String(20), default=QUEUED, index=True)
     error: Mapped[str | None] = mapped_column(Text)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    # Stops duplicates, e.g. "auto:<customer>:<date>" = at most one automatic reminder a day
+    idempotency_key: Mapped[str | None] = mapped_column(String(100), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
     customer: Mapped[Customer] = relationship()
-    rule: Mapped[ReminderRule] = relationship()
+    rule: Mapped[ReminderRule | None] = relationship()
+
+    @property
+    def is_sent(self) -> bool:
+        return self.status in SENT_STATUSES
+
+
+class ReminderStep(Base):
+    """Which schedule step each bill has already been reminded for (each step goes out once per bill)."""
+
+    __tablename__ = "reminder_steps"
+    __table_args__ = (UniqueConstraint("invoice_id", "rule_id", name="uq_step_once"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    invoice_id: Mapped[int] = mapped_column(ForeignKey("invoices.id"), index=True)
+    rule_id: Mapped[int] = mapped_column(ForeignKey("reminder_rules.id"), index=True)
+    message_id: Mapped[int | None] = mapped_column(ForeignKey("messages.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 
 class InboundMessage(Base):

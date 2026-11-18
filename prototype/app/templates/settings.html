@@ -14,6 +14,25 @@
     {% if status.paused %}<button>Resume automatic sending</button>
     {% else %}<button class="secondary">Pause all sending</button>{% endif %}
   </form>
+  <details class="section">
+    <summary>Change the send time and sending hours</summary>
+    <form method="post" action="/settings/sending" class="form-grid">{{ csrf_input(request) }}
+      <div class="field">
+        <label for="run_hour">Daily reminders go out from</label>
+        <select id="run_hour" name="run_hour">{% for h in range(6, 22) %}<option value="{{ h }}" {{ 'selected' if h == status.run_hour }}>{{ '%d:00' % h }}</option>{% endfor %}</select>
+      </div>
+      <div class="field">
+        <label for="window_start">Never send before</label>
+        <select id="window_start" name="window_start">{% for h in range(5, 13) %}<option value="{{ h }}" {{ 'selected' if h == status.window_start }}>{{ '%d:00' % h }}</option>{% endfor %}</select>
+      </div>
+      <div class="field">
+        <label for="window_end">Never send after</label>
+        <select id="window_end" name="window_end">{% for h in range(15, 24) %}<option value="{{ h }}" {{ 'selected' if h == status.window_end }}>{{ '%d:00' % h }}</option>{% endfor %}</select>
+      </div>
+      <div class="field"><button>Save</button></div>
+    </form>
+    <p class="muted small">Reminders you set for a specific time, and retries, also wait for these hours. “Send reminder now” on a customer's page goes straight away.</p>
+  </details>
 </section>
 
 <section class="card section" aria-labelledby="schedule">

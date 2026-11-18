@@ -1,6 +1,6 @@
 import hashlib
 import secrets
-from datetime import date
+from datetime import date, datetime, time
 from decimal import Decimal
 from urllib.parse import quote_plus
 from pathlib import Path
@@ -18,6 +18,7 @@ from app.importers.outstanding import ImportError_, import_customers, import_out
 from app.models import (
     DISPUTED,
     OPENING,
+    QUEUED,
     OWING_STATUSES,
     UNPAID_STATUSES,
     Customer,
@@ -26,9 +27,11 @@ from app.models import (
     Invoice,
     Payment,
     Receipt,
-    ReminderLog,
+    Message,
+    ReminderStep,
     ReminderRule,
 )
+from app.reminders import engine
 from app.reminders.engine import call_list, run_reminders
 from app.security import csrf_input, csrf_protect
 from app.whatsapp.provider import get_provider
@@ -36,7 +39,8 @@ from app.whatsapp.provider import get_provider
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 templates = Jinja2Templates(directory=Path(__file__).resolve().parent.parent / "templates")
 templates.env.filters.update(
-    inr=ui.inr, when=ui.when, days_text=ui.days_text, overdue_text=ui.overdue_text, tone=ui.tone, status_label=ui.status_label
+    inr=ui.inr, when=ui.when, days_text=ui.days_text, overdue_text=ui.overdue_text, tone=ui.tone, status_label=ui.status_label,
+    message_label=ui.message_label, when_phrase=ui.when_phrase,
 )
 templates.env.globals["config"] = config
 templates.env.globals["csrf_input"] = csrf_input
@@ -144,7 +148,10 @@ def customers(request: Request, q: str = "", missing: str = "", db: Session = De
 def _customer_page(request: Request, db: Session, c: Customer, error: str | None = None,
                    values: dict | None = None, status_code: int = 200):
     invoices = db.scalars(select(Invoice).where(Invoice.customer_id == c.id).order_by(Invoice.due_date.desc())).all()
-    logs = db.scalars(select(ReminderLog).where(ReminderLog.customer_id == c.id).order_by(ReminderLog.id.desc()).limit(20)).all()
+    logs = db.scalars(select(Message).where(Message.customer_id == c.id, Message.status != QUEUED)
+                      .order_by(Message.id.desc()).limit(20)).all()
+    upcoming = db.scalars(select(Message).where(Message.customer_id == c.id, Message.status == QUEUED)
+                          .order_by(Message.scheduled_for)).all()
     replies = db.scalars(select(InboundMessage).where(InboundMessage.customer_id == c.id).order_by(InboundMessage.id.desc()).limit(20)).all()
     receipts = db.scalars(
         select(Receipt).options(selectinload(Receipt.payments).joinedload(Payment.invoice))
@@ -155,7 +162,7 @@ def _customer_page(request: Request, db: Session, c: Customer, error: str | None
     owing = sorted((i for i in invoices if i.status in OWING_STATUSES and i.balance > 0), key=lambda i: (i.due_date, i.id))
     unpaid = [i for i in owing if i.status in UNPAID_STATUSES]
     return render(request, "customer_detail.html", {
-        "c": c, "invoices": invoices, "owing": owing, "logs": logs, "replies": replies, "receipts": receipts,
+        "c": c, "invoices": invoices, "owing": owing, "logs": logs, "upcoming": upcoming, "replies": replies, "receipts": receipts,
         "modes": list(payments.MODES.items()), "credit": payments.customer_credit(db, c.id),
         "due": sum((i.balance for i in unpaid), Decimal(0)),
         "overdue": sum((i.balance for i in unpaid if i.days_overdue(today) > 0), Decimal(0)),
@@ -256,6 +263,73 @@ def undo_payment(rid: int, request: Request, db: Session = Depends(get_db), user
     return redirect(f"/customers/{cid}")
 
 
+@router.post("/customers/{cid}/send-now")
+def send_reminder_now(cid: int, request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
+    c = db.get(Customer, cid) or _404()
+    msg = engine.send_now(db, get_provider(), c)
+    if msg.is_sent:
+        flash(request, f"Reminder sent to {c.display_name} for ₹{ui.inr(msg.amount_due)}.")
+    elif msg.status == QUEUED:
+        flash(request, f"Couldn't send just now ({msg.error}). It will be tried again in a few minutes.", "warn")
+    else:
+        flash(request, f"Not sent: {msg.error}.", "warn")
+    return redirect(f"/customers/{cid}")
+
+
+@router.post("/customers/{cid}/remind-later", response_class=HTMLResponse)
+def remind_later(
+    cid: int,
+    request: Request,
+    on: str = Form(""),
+    at: str = Form("11:00"),
+    note: str = Form(""),
+    promise: bool = Form(False),
+    db: Session = Depends(get_db),
+    user: str = Depends(require_login),
+):
+    c = db.get(Customer, cid) or _404()
+    try:
+        try:
+            when = datetime.combine(date.fromisoformat(on), time.fromisoformat(at or "11:00"))
+        except ValueError:
+            raise engine.ScheduleError("Choose a date and time") from None
+        engine.schedule_one_off(db, c, when, note, promise)
+    except engine.ScheduleError as e:
+        db.rollback()
+        values = {"on": on, "at": at, "note": note, "promise": "true" if promise else ""}
+        return _customer_page(request, db, c, error=str(e), values=values, status_code=400)
+    flash(request, f"Reminder set {ui.when_phrase(when.date(), clock.today(), 'for')} at {when:%H:%M}.")
+    return redirect(f"/customers/{cid}")
+
+
+@router.post("/messages/{mid}/cancel")
+def cancel_reminder(mid: int, request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
+    m = db.get(Message, mid) or _404()
+    try:
+        engine.cancel_message(db, m)
+        flash(request, "Reminder cancelled.")
+    except engine.ScheduleError as e:
+        flash(request, str(e), "warn")
+    return redirect(f"/customers/{m.customer_id}")
+
+
+@router.post("/messages/{mid}/promise-done")
+def promise_done(mid: int, db: Session = Depends(get_db), user: str = Depends(require_login)):
+    m = db.get(Message, mid) or _404()
+    m.is_promise = False  # stop following it up under "Needs you"
+    db.commit()
+    return redirect("/")
+
+
+@router.post("/customers/{cid}/pause")
+def toggle_customer_pause(cid: int, request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
+    c = db.get(Customer, cid) or _404()
+    c.reminders_paused = not c.reminders_paused
+    db.commit()
+    flash(request, f"Reminders {'paused' if c.reminders_paused else 'resumed'} for {c.display_name}.")
+    return redirect(f"/customers/{cid}")
+
+
 @router.post("/invoices/{iid}/dispute")
 def toggle_dispute(iid: int, request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
     inv = db.get(Invoice, iid) or _404()
@@ -284,7 +358,8 @@ def call_list_page(request: Request, days: int = 15, area: str = "", db: Session
 @router.get("/messages", response_class=HTMLResponse)
 def messages(request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
     logs = db.scalars(
-        select(ReminderLog).options(joinedload(ReminderLog.customer), joinedload(ReminderLog.rule)).order_by(ReminderLog.id.desc()).limit(200)
+        select(Message).options(joinedload(Message.customer)).where(Message.status != QUEUED)
+        .order_by(Message.id.desc()).limit(200)
     ).all()
     replies = db.scalars(select(InboundMessage).options(joinedload(InboundMessage.customer)).order_by(InboundMessage.id.desc()).limit(50)).all()
     return render(request, "messages.html", {"logs": logs, "replies": replies, "status": sending_status(db)})
@@ -321,10 +396,85 @@ def toggle_pause(request: Request, db: Session = Depends(get_db), user: str = De
     return redirect("/settings")
 
 
+@router.post("/settings/sending")
+def save_sending(
+    request: Request,
+    run_hour: int = Form(...),
+    window_start: int = Form(...),
+    window_end: int = Form(...),
+    db: Session = Depends(get_db),
+    user: str = Depends(require_login),
+):
+    if not (0 <= window_start < window_end <= 24):
+        flash(request, "The sending hours must start before they end.", "error")
+    elif not (window_start <= run_hour < window_end):
+        flash(request, f"The daily send time must be within the sending hours ({window_start}:00 to {window_end}:00).", "error")
+    else:
+        settings.set_value(db, "reminder_run_hour", run_hour)
+        settings.set_value(db, "send_window_start", window_start)
+        settings.set_value(db, "send_window_end", window_end)
+        flash(request, f"Saved. Reminders go out from {run_hour}:00 each day.")
+    return redirect("/settings")
+
+
+RULE_RANGE = (-30, 365)
+
+
+def _rule_offset(days: int, when: str) -> int:
+    if when == "on":
+        return 0
+    if days < 1:
+        raise ValueError("Enter how many days")
+    offset = -days if when == "before" else days
+    if not RULE_RANGE[0] <= offset <= RULE_RANGE[1]:
+        raise ValueError(f"Choose up to {-RULE_RANGE[0]} days before or {RULE_RANGE[1]} days after the due date")
+    return offset
+
+
+def _save_rule(db: Session, rule: ReminderRule, days: int, when: str, template: str) -> str | None:
+    try:
+        offset = _rule_offset(days, when)
+    except ValueError as e:
+        return str(e)
+    if template not in ui.TONES:
+        return "Choose a tone"
+    clash = db.scalar(select(ReminderRule).where(ReminderRule.offset_days == offset, ReminderRule.id != (rule.id or 0)))
+    if clash:
+        return f"There is already a step for {ui.days_text(offset).lower()}"
+    rule.offset_days, rule.template_name, rule.name = offset, template, ui.days_text(offset)
+    return None
+
+
 @router.get("/rules", response_class=HTMLResponse)
 def rules(request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
     rows = db.scalars(select(ReminderRule).order_by(ReminderRule.offset_days)).all()
-    return render(request, "rules.html", {"rules": rows})
+    return render(request, "rules.html", {"rules": rows, "tones": ui.TONES, "grace": engine.GRACE_DAYS})
+
+
+@router.post("/rules")
+def add_rule(request: Request, days: int = Form(0), when: str = Form("after"), template: str = Form(...),
+             db: Session = Depends(get_db), user: str = Depends(require_login)):
+    rule = ReminderRule(is_active=True)
+    if error := _save_rule(db, rule, days, when, template):
+        flash(request, error, "error")
+        return redirect("/rules")
+    db.add(rule)
+    db.commit()
+    flash(request, f"Added: {rule.name}.")
+    return redirect("/rules")
+
+
+@router.post("/rules/{rid}")
+def edit_rule(rid: int, request: Request, days: int = Form(0), when: str = Form("after"), template: str = Form(...),
+              db: Session = Depends(get_db), user: str = Depends(require_login)):
+    rule = db.get(ReminderRule, rid) or _404()
+    if error := _save_rule(db, rule, days, when, template):
+        db.rollback()
+        flash(request, error, "error")
+        return redirect("/rules")
+    db.commit()
+    flash(request, f"Saved: {rule.name}.")
+    return redirect("/rules")
 
 
 @router.post("/rules/{rid}/toggle")
@@ -332,6 +482,18 @@ def toggle_rule(rid: int, db: Session = Depends(get_db), user: str = Depends(req
     r = db.get(ReminderRule, rid) or _404()
     r.is_active = not r.is_active
     db.commit()
+    return redirect("/rules")
+
+
+@router.post("/rules/{rid}/delete")
+def delete_rule(rid: int, request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
+    r = db.get(ReminderRule, rid) or _404()
+    name = r.name
+    db.execute(ReminderStep.__table__.delete().where(ReminderStep.rule_id == rid))
+    db.execute(Message.__table__.update().where(Message.rule_id == rid).values(rule_id=None))
+    db.delete(r)
+    db.commit()
+    flash(request, f"Removed: {name}.")
     return redirect("/rules")
 
 

@@ -1,27 +1,54 @@
-"""Daily reminder run.
+"""Payment reminders: who gets what, and the outbox that sends it.
 
-1. Find unpaid invoices whose (today - due_date) equals an active rule's offset_days.
-2. Group by customer: one message per customer, using the most severe rule hit today, and
-   quoting the customer's TOTAL unpaid balance (not just the invoice that triggered it).
-3. Skip customers who are opted out / paused / have no phone / paid something today / were
-   already sent this rule today.
+Automatic reminders (the schedule)
+  * Each schedule step (ReminderRule) fires once per bill when the bill reaches that many days from
+    its due date. If the app missed that day (server asleep, report uploaded late), the step still
+    fires within GRACE_DAYS. ReminderStep remembers which (bill, step) pairs are done.
+  * One message per customer covers all their unpaid bills. Its tone follows the OLDEST unpaid bill,
+    and a customer gets at most one automatic reminder a day.
+
+Every message (automatic, one-off "remind me on ...", or "send now") is a row in the outbox (Message).
+It is written when it is sent, so it always quotes the latest balance; if nothing is owed any more by
+then, it is cancelled. A failed send is retried on the next ticks, up to MAX_ATTEMPTS.
 """
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 from urllib.parse import quote
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
-from app import clock, config, settings
-from app.models import OPENING, UNPAID_STATUSES, Customer, Invoice, Receipt, ReminderLog, ReminderRule
+from app import clock, config, settings, ui
+from app.models import (
+    CANCELLED,
+    FAILED,
+    KIND_MANUAL,
+    KIND_ONE_OFF,
+    KIND_REMINDER,
+    OPENING,
+    QUEUED,
+    SKIPPED,
+    UNPAID_STATUSES,
+    Customer,
+    Invoice,
+    Message,
+    Receipt,
+    ReminderRule,
+    ReminderStep,
+)
 from app.whatsapp.provider import WhatsAppProvider
 from app.whatsapp.templates import render
 
+GRACE_DAYS = 3  # a missed step still goes out up to this many days late
+MAX_ATTEMPTS = 3
 MAX_INVOICES_IN_MESSAGE = 3
+AUTO_KINDS = (KIND_REMINDER, KIND_ONE_OFF)  # held back by "Pause all sending" and the sending hours
+
+# Tone when no schedule step applies (no active steps at all)
+FALLBACK_TEMPLATES = ((1, "payment_overdue"), (0, "payment_due_today"), (-10**6, "payment_reminder_upcoming"))
 
 
 @dataclass
@@ -30,13 +57,16 @@ class RunSummary:
     sent: int = 0
     failed: int = 0
     skipped: int = 0
+    cancelled: int = 0
     already_done: int = 0
     outside_window: bool = False
     details: list[str] = field(default_factory=list)
 
 
+# ---------- message content ----------
+
 def fmt_amount(value: Decimal) -> str:
-    return f"{value:,.2f}"
+    return ui.inr(value)
 
 
 def upi_link(amount: Decimal, note: str) -> str:
@@ -48,93 +78,234 @@ def upi_link(amount: Decimal, note: str) -> str:
     )
 
 
-def build_params(customer: Customer, invoices: list[Invoice]) -> tuple[list[str], Decimal]:
-    invoices = sorted(invoices, key=lambda i: i.due_date)
-    total = sum((i.balance for i in invoices), Decimal("0"))
-    nos = [i.invoice_no for i in invoices[:MAX_INVOICES_IN_MESSAGE]]
-    inv_text = ", ".join(nos)
-    if len(invoices) > MAX_INVOICES_IN_MESSAGE:
-        inv_text += f" +{len(invoices) - MAX_INVOICES_IN_MESSAGE} more"
+@dataclass
+class Content:
+    invoices: list[Invoice]  # every unpaid bill, oldest due first
+    focus: list[Invoice]     # the bills the message is about: due or overdue (else the next ones coming due)
+    focus_amount: Decimal
+    total: Decimal
+    params: list[str]
+
+
+def message_content(customer: Customer, invoices: list[Invoice], today: date) -> Content | None:
+    """Template parameters ({{1}}..{{7}}, see app/whatsapp/templates.py), or None if nothing is owed."""
+    unpaid = sorted((i for i in invoices if i.status in UNPAID_STATUSES and i.balance > 0), key=lambda i: (i.due_date, i.id))
+    if not unpaid:
+        return None
+    focus = [i for i in unpaid if i.days_overdue(today) >= 0]
+    if not focus:
+        first_due = unpaid[0].due_date
+        focus = [i for i in unpaid if i.due_date == first_due]
+    focus_amount = sum((i.balance for i in focus), Decimal(0))
+    total = sum((i.balance for i in unpaid), Decimal(0))
+    nos = ", ".join(i.invoice_no for i in focus[:MAX_INVOICES_IN_MESSAGE])
+    if len(focus) > MAX_INVOICES_IN_MESSAGE:
+        nos += f" +{len(focus) - MAX_INVOICES_IN_MESSAGE} more"
     params = [
         customer.display_name,
         config.BUSINESS_NAME,
+        fmt_amount(focus_amount),
         fmt_amount(total),
-        inv_text,
-        invoices[0].due_date.strftime("%d-%b-%Y"),
-        upi_link(total, f"Dues {customer.code or customer.id}"),
+        nos,
+        focus[0].due_date.strftime("%d-%b-%Y"),
+        upi_link(focus_amount, f"Dues {customer.code or customer.id}"),
     ]
-    return params, total
+    return Content(invoices=unpaid, focus=focus, focus_amount=focus_amount, total=total, params=params)
 
 
-def _skip_reason(db: Session, customer: Customer, today: date) -> str | None:
+def active_rules(db: Session) -> list[ReminderRule]:
+    return list(db.scalars(select(ReminderRule).where(ReminderRule.is_active).order_by(ReminderRule.offset_days)).all())
+
+
+def tone_template(rules: list[ReminderRule], invoices: list[Invoice], today: date) -> tuple[ReminderRule | None, str]:
+    """The step whose tone fits the customer's OLDEST unpaid bill, and its template."""
+    worst = max(i.days_overdue(today) for i in invoices)
+    reached = [r for r in rules if r.offset_days <= worst]
+    if reached:
+        r = reached[-1]
+        return r, r.template_name
+    if rules:  # nothing reached yet (bills not due): the gentlest step
+        return rules[0], rules[0].template_name
+    return None, next(t for limit, t in FALLBACK_TEMPLATES if worst >= limit)
+
+
+def skip_reason(db: Session, customer: Customer, today: date, kind: str = KIND_REMINDER) -> str | None:
     if not customer.is_active:
         return "customer inactive"
     if not customer.whatsapp_opt_in:
         return "not opted in to WhatsApp"
-    if customer.reminders_paused:
-        return "reminders paused"
     if not customer.phone:
         return "no phone number"
-    paid_today = db.scalar(
-        select(Receipt.id).where(Receipt.customer_id == customer.id, Receipt.received_on == today, Receipt.source != OPENING).limit(1)
-    )
-    if paid_today:
-        return "payment recorded today"
+    if customer.reminders_paused and kind != KIND_MANUAL:
+        return "reminders paused"
+    if kind == KIND_REMINDER:
+        paid_today = db.scalar(
+            select(Receipt.id).where(Receipt.customer_id == customer.id, Receipt.received_on == today, Receipt.source != OPENING).limit(1)
+        )
+        if paid_today:
+            return "payment recorded today"
     return None
+
+
+def unpaid_by_customer(db: Session, customer_ids: list[int] | None = None) -> dict[int, list[Invoice]]:
+    stmt = select(Invoice).options(joinedload(Invoice.customer)).where(Invoice.status.in_(UNPAID_STATUSES))
+    if customer_ids is not None:
+        stmt = stmt.where(Invoice.customer_id.in_(customer_ids))
+    out: dict[int, list[Invoice]] = defaultdict(list)
+    for inv in db.scalars(stmt).all():
+        if inv.balance > 0:
+            out[inv.customer_id].append(inv)
+    return out
+
+
+# ---------- the schedule ----------
+
+def auto_key(customer_id: int, day: date) -> str:
+    return f"auto:{customer_id}:{day.isoformat()}"
 
 
 @dataclass
 class PlannedReminder:
-    """One customer who is due a reminder today, and what would be sent."""
+    """A customer with schedule steps due today, and what the reminder would say."""
 
     customer: Customer
-    rule: ReminderRule
-    invoices: list[Invoice]
-    params: list[str]
-    total: Decimal
-    skip_reason: str | None = None  # set when this customer will not be messaged (no phone, paused...)
-    existing: ReminderLog | None = None  # set when this rule already ran for the customer today
+    rule: ReminderRule  # the tone
+    steps: list[tuple[Invoice, ReminderRule]]
+    content: Content
+    skip_reason: str | None = None
+    existing: Message | None = None  # today's automatic reminder, if one was already made
+
+    @property
+    def total(self) -> Decimal:
+        return self.content.total
+
+    @property
+    def params(self) -> list[str]:
+        return self.content.params
 
 
 def plan_reminders(db: Session, today: date) -> list[PlannedReminder]:
-    """Who gets which reminder today. Read-only: used by the run itself and by the Today page preview."""
-    rules = {r.offset_days: r for r in db.scalars(select(ReminderRule).where(ReminderRule.is_active)).all()}
+    """Who has schedule steps due today. Read-only: used by the run itself and the Today page."""
+    rules = active_rules(db)
     if not rules:
         return []
+    by_customer = unpaid_by_customer(db)
+    bill_ids = [i.id for invs in by_customer.values() for i in invs]
+    done = set(db.execute(select(ReminderStep.invoice_id, ReminderStep.rule_id).where(ReminderStep.invoice_id.in_(bill_ids))).all()) if bill_ids else set()
 
-    unpaid = db.scalars(
-        select(Invoice).options(joinedload(Invoice.customer)).where(Invoice.status.in_(UNPAID_STATUSES))
-    ).all()
-
-    by_customer: dict[int, list[Invoice]] = defaultdict(list)
-    triggered: set[int] = set()
-    for inv in unpaid:
-        if inv.balance <= 0:
-            continue
-        by_customer[inv.customer_id].append(inv)
-        if inv.days_overdue(today) in rules:
-            triggered.add(inv.customer_id)
-
-    offsets = sorted(rules)
     plan = []
-    for customer_id in sorted(triggered):
-        invoices = by_customer[customer_id]
-        # A bill hitting a rule today triggers the message, but its tone follows the OLDEST unpaid bill:
-        # a customer with a 31-day-old bill should not get a friendly "due today" note for a new bill.
-        worst = max(i.days_overdue(today) for i in invoices)
-        rule = rules[max(o for o in offsets if o <= worst)]
+    for cid in sorted(by_customer):
+        invoices = by_customer[cid]
+        steps = [
+            (inv, r) for inv in invoices for r in rules
+            if 0 <= inv.days_overdue(today) - r.offset_days < GRACE_DAYS and (inv.id, r.id) not in done
+        ]
+        if not steps:
+            continue
         customer = invoices[0].customer
-        existing = db.scalar(
-            select(ReminderLog).where(
-                ReminderLog.customer_id == customer_id,
-                ReminderLog.rule_id == rule.id,
-                ReminderLog.run_date == today,
-            )
-        )
-        params, total = build_params(customer, invoices)
-        plan.append(PlannedReminder(customer=customer, rule=rule, invoices=invoices, params=params, total=total,
-                                    skip_reason=_skip_reason(db, customer, today), existing=existing))
+        rule, _ = tone_template(rules, invoices, today)
+        plan.append(PlannedReminder(
+            customer=customer, rule=rule, steps=steps, content=message_content(customer, invoices, today),
+            skip_reason=skip_reason(db, customer, today),
+            existing=db.scalar(select(Message).where(Message.idempotency_key == auto_key(cid, today))),
+        ))
     return plan
+
+
+def enqueue_due_reminders(db: Session, now: datetime, summary: RunSummary | None = None) -> list[Message]:
+    """Put today's due schedule steps in the outbox (one message per customer) and mark the steps done."""
+    today = now.date()
+    created = []
+    for p in plan_reminders(db, today):
+        if p.existing:
+            if summary:
+                summary.already_done += 1
+            continue
+        if p.skip_reason:  # not queued: if fixed within the grace days (e.g. number added), it still goes out
+            if summary:
+                summary.skipped += 1
+                summary.details.append(f"Skipped {p.customer.display_name}: {p.skip_reason}")
+            continue
+        msg = Message(customer=p.customer, kind=KIND_REMINDER, rule=p.rule, template_name=p.rule.template_name,
+                      run_date=today, scheduled_for=now, status=QUEUED, idempotency_key=auto_key(p.customer.id, today))
+        db.add(msg)
+        db.flush()
+        for inv, rule in p.steps:
+            db.add(ReminderStep(invoice_id=inv.id, rule_id=rule.id, message_id=msg.id))
+        created.append(msg)
+    db.commit()
+    return created
+
+
+# ---------- the outbox ----------
+
+def send_one(db: Session, provider: WhatsAppProvider, msg: Message, now: datetime) -> str:
+    """Write and send one message. Returns 'sent', 'retrying', 'failed', 'skipped' or 'cancelled'."""
+    today = now.date()
+    customer = msg.customer
+    reason = skip_reason(db, customer, today, msg.kind)
+    if reason:
+        msg.status, msg.error = SKIPPED, reason
+        db.commit()
+        return "skipped"
+    invoices = unpaid_by_customer(db, [customer.id]).get(customer.id, [])
+    content = message_content(customer, invoices, today)
+    if content is None:
+        msg.status, msg.error = CANCELLED, "Nothing owed any more"
+        db.commit()
+        return "cancelled"
+    if not msg.template_name or msg.kind != KIND_REMINDER:
+        rule, template = tone_template(active_rules(db), content.invoices, today)
+        msg.template_name = template
+        msg.rule = msg.rule or rule
+    msg.invoice_nos = ",".join(i.invoice_no for i in content.invoices)
+    msg.amount_due = content.total
+    msg.message_preview = render(msg.template_name, content.params)
+
+    result = provider.send_template(customer.phone, msg.template_name, content.params)
+    msg.attempts = (msg.attempts or 0) + 1
+    if result.ok:
+        msg.status, msg.provider_msg_id, msg.error, msg.sent_at = result.status, result.message_id, None, now
+        outcome = "sent"
+    else:
+        msg.error = result.error
+        msg.status = FAILED if msg.attempts >= MAX_ATTEMPTS else QUEUED  # queued again = retried next tick
+        outcome = "failed" if msg.status == FAILED else "retrying"
+    db.commit()
+    return outcome
+
+
+def due_messages(db: Session, now: datetime, kinds=AUTO_KINDS) -> list[Message]:
+    return list(db.scalars(
+        select(Message).options(joinedload(Message.customer))
+        .where(Message.status == QUEUED, Message.kind.in_(kinds),
+               (Message.scheduled_for.is_(None)) | (Message.scheduled_for <= now))
+        .order_by(Message.scheduled_for, Message.id)
+    ).all())
+
+
+def in_send_window(db: Session, now: datetime) -> tuple[bool, int, int]:
+    start, end = settings.get_int(db, "send_window_start"), settings.get_int(db, "send_window_end")
+    return start <= now.hour < end, start, end
+
+
+def send_due(db: Session, provider: WhatsAppProvider, now: datetime, summary: RunSummary) -> RunSummary:
+    """Send everything in the outbox whose time has come (automatic and one-off reminders, retries)."""
+    for msg in due_messages(db, now):
+        outcome = send_one(db, provider, msg, now)
+        name = msg.customer.display_name
+        if outcome == "sent":
+            summary.sent += 1
+            summary.details.append(f"{ui.tone(msg.template_name)} -> {name} (Rs. {fmt_amount(msg.amount_due)})")
+        elif outcome in ("failed", "retrying"):
+            summary.failed += 1
+            summary.details.append(f"FAILED {name}: {msg.error}" + (" (will retry)" if outcome == "retrying" else ""))
+        elif outcome == "skipped":
+            summary.skipped += 1
+            summary.details.append(f"Skipped {name}: {msg.error}")
+        else:
+            summary.cancelled += 1
+    return summary
 
 
 def run_reminders(
@@ -144,80 +315,80 @@ def run_reminders(
     now: datetime | None = None,
     enforce_window: bool = True,
 ) -> RunSummary:
-    now = now or clock.now()
+    """Queue today's due schedule steps and send everything that is due."""
+    now = now or (datetime.combine(today, time(12, 0)) if today else clock.now())
     today = today or now.date()
+    if now.date() != today:
+        now = datetime.combine(today, now.time())
     summary = RunSummary(run_date=today)
-
-    start, end = settings.get_int(db, "send_window_start"), settings.get_int(db, "send_window_end")
-    if enforce_window and not (start <= now.hour < end):
+    ok, start, end = in_send_window(db, now)
+    if enforce_window and not ok:
         summary.outside_window = True
         summary.details.append(f"Not sending: {now:%H:%M} is outside the {start}:00-{end}:00 window")
         return summary
+    if not active_rules(db):
+        summary.details.append("No active reminder steps")
+    enqueue_due_reminders(db, now, summary)
+    return send_due(db, provider, now, summary)
 
-    if not db.scalar(select(ReminderRule.id).where(ReminderRule.is_active).limit(1)):
-        summary.details.append("No active reminder rules")
+
+def send_pending(db: Session, provider: WhatsAppProvider, now: datetime) -> RunSummary:
+    """Before the daily run hour: only one-off reminders and retries whose time has come."""
+    summary = RunSummary(run_date=now.date())
+    ok, _, _ = in_send_window(db, now)
+    if not ok:
+        summary.outside_window = True
         return summary
+    return send_due(db, provider, now, summary)
 
-    for item in plan_reminders(db, today):
-        customer, rule, invoices, params, total = item.customer, item.rule, item.invoices, item.params, item.total
-        if item.existing:
-            summary.already_done += 1
-            continue
 
-        log = ReminderLog(
-            customer_id=customer.id,
-            rule_id=rule.id,
-            run_date=today,
-            invoice_nos=",".join(i.invoice_no for i in sorted(invoices, key=lambda i: i.due_date)),
-            amount_due=total,
-            message_preview=render(rule.template_name, params),
-            attempts=0,
-        )
-        db.add(log)
+# ---------- the owner's own reminders ----------
 
-        if item.skip_reason:
-            log.status = "skipped"
-            log.error = item.skip_reason
-            summary.skipped += 1
-            summary.details.append(f"Skipped {customer.display_name}: {item.skip_reason}")
-            db.commit()
-            continue
+class ScheduleError(ValueError):
+    """Shown to the owner as-is."""
 
-        result = None
-        for _ in range(2):  # one retry
-            log.attempts += 1
-            result = provider.send_template(customer.phone, rule.template_name, params)
-            if result.ok:
-                break
-        log.status = result.status if result.ok else "failed"
-        log.provider_msg_id = result.message_id
-        log.error = result.error
-        log.sent_at = clock.now() if result.ok else None
-        if result.ok:
-            summary.sent += 1
-            summary.details.append(f"{rule.name} -> {customer.display_name} (Rs. {fmt_amount(total)})")
-        else:
-            summary.failed += 1
-            summary.details.append(f"FAILED {customer.display_name}: {result.error}")
-        db.commit()
 
-    return summary
+def send_now(db: Session, provider: WhatsAppProvider, customer: Customer, now: datetime | None = None) -> Message:
+    """The owner pressed "Send reminder now": goes out straight away, even outside sending hours or when paused."""
+    now = now or clock.now()
+    msg = Message(customer=customer, kind=KIND_MANUAL, run_date=now.date(), scheduled_for=now, status=QUEUED)
+    db.add(msg)
+    db.flush()
+    send_one(db, provider, msg, now)
+    return msg
+
+
+def schedule_one_off(db: Session, customer: Customer, when: datetime, note: str | None = None,
+                     is_promise: bool = False, now: datetime | None = None) -> Message:
+    """'Remind on <date> at <time>' for one customer, e.g. the day they promised to pay."""
+    now = now or clock.now()
+    if when <= now:
+        raise ScheduleError("Choose a time in the future")
+    if not customer.phone:
+        raise ScheduleError("Add a WhatsApp number for this customer first")
+    msg = Message(customer=customer, kind=KIND_ONE_OFF, run_date=when.date(), scheduled_for=when, status=QUEUED,
+                  note=(note or "").strip()[:200] or None, is_promise=is_promise)
+    db.add(msg)
+    db.commit()
+    return msg
+
+
+def cancel_message(db: Session, msg: Message) -> None:
+    if msg.status != QUEUED:
+        raise ScheduleError("That reminder has already been handled")
+    msg.status, msg.error = CANCELLED, "Cancelled by you"
+    db.commit()
 
 
 def call_list(db: Session, today: date | None = None, min_days_overdue: int = 15) -> list[dict]:
     """Customers whose oldest unpaid invoice is at least min_days_overdue late, worst first."""
     today = today or clock.today()
     rows: dict[int, dict] = {}
-    for inv in db.scalars(
-        select(Invoice).options(joinedload(Invoice.customer)).where(Invoice.status.in_(UNPAID_STATUSES))
-    ).all():
-        if inv.balance <= 0:
-            continue
-        r = rows.setdefault(
-            inv.customer_id, {"customer": inv.customer, "total": Decimal("0"), "max_overdue": -10**6, "count": 0}
-        )
-        r["total"] += inv.balance
-        r["count"] += 1
-        r["max_overdue"] = max(r["max_overdue"], inv.days_overdue(today))
+    for cid, invoices in unpaid_by_customer(db).items():
+        r = rows.setdefault(cid, {"customer": invoices[0].customer, "total": Decimal("0"), "max_overdue": -10**6, "count": 0})
+        for inv in invoices:
+            r["total"] += inv.balance
+            r["count"] += 1
+            r["max_overdue"] = max(r["max_overdue"], inv.days_overdue(today))
     result = [r for r in rows.values() if r["max_overdue"] >= min_days_overdue]
     return sorted(result, key=lambda r: (-r["max_overdue"], -r["total"]))

@@ -19,6 +19,7 @@ STATUS_LABELS = {
     "read": "Read",
     "failed": "Failed",
     "skipped": "Not sent",
+    "cancelled": "Not needed",
     "queued": "Waiting",
     "open": "Unpaid",
     "partial": "Part paid",
@@ -63,6 +64,12 @@ def when(value: date | datetime | None, today: date | None = None) -> str:
     return f"{d.day} {d:%b}" if same_year else f"{d.day} {d:%b %Y}"
 
 
+def when_phrase(value: date | datetime | None, today: date, prep: str = "on") -> str:
+    """For the middle of a sentence: 'today', 'tomorrow', 'yesterday', else 'on 21 Nov' (or 'by 21 Nov')."""
+    text = when(value, today)
+    return text.lower() if text in ("Today", "Tomorrow", "Yesterday") else f"{prep} {text}"
+
+
 def days_text(offset: int) -> str:
     """Reminder rule offset in plain words: -3 -> '3 days before due', 0 -> 'On the due date'."""
     if offset == 0:
@@ -80,8 +87,19 @@ def overdue_text(days: int) -> str:
     return f"Due in {-days} day{'s' if days != -1 else ''}"
 
 
-def tone(template_name: str) -> str:
+def tone(template_name: str | None) -> str:
+    if not template_name:
+        return "Reminder"
     return TONES.get(template_name, template_name.replace("_", " ").capitalize())
+
+
+def message_label(msg) -> str:
+    """How the owner thinks of a message: who asked for it, or its tone."""
+    if msg.kind == "manual":
+        return "Sent by you"
+    if msg.kind == "one_off":
+        return "Promise reminder" if msg.is_promise else "Your scheduled reminder"
+    return tone(msg.template_name)
 
 
 def status_label(status: str | None) -> str:

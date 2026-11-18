@@ -298,3 +298,128 @@ def test_collected_on_today_page_counts_new_payments(logged_in, data):
     _pay(logged_in, c.id, amount="1234", **{f"alloc_{inv.id}": "1234"})
     html = logged_in.get("/").text
     assert html.index("₹1,234") < html.index("Due to you")
+
+
+# ---------- Phase 3: reminder controls ----------
+
+def test_send_reminder_now_from_customer_page(logged_in, db, data):
+    from app.models import Message
+
+    c = data["customer"]
+    r = logged_in.post(f"/customers/{c.id}/send-now", data={"csrf_token": logged_in.csrf}, follow_redirects=True)
+    assert "Reminder sent to Sharma Store for ₹5,000." in r.text
+    m = db.query(Message).one()
+    assert m.kind == "manual" and m.status == "dryrun"
+
+
+def test_remind_later_then_cancel(logged_in, db, data):
+    from datetime import timedelta
+
+    from app.models import Message
+
+    c = data["customer"]
+    tomorrow = (clock.today() + timedelta(days=1)).isoformat()
+    r = logged_in.post(f"/customers/{c.id}/remind-later", data={
+        "csrf_token": logged_in.csrf, "on": tomorrow, "at": "15:30", "note": "after market day", "promise": "true"})
+    assert r.status_code == 303
+    m = db.query(Message).one()
+    assert m.kind == "one_off" and m.is_promise and m.scheduled_for.strftime("%H:%M") == "15:30"
+    page = logged_in.get(f"/customers/{c.id}").text
+    assert "Payment promised: reminder" in page and "after market day" in page
+    logged_in.post(f"/messages/{m.id}/cancel", data={"csrf_token": logged_in.csrf})
+    db.refresh(m)
+    assert m.status == "cancelled"
+
+
+def test_remind_later_in_the_past_is_refused_and_keeps_values(logged_in, data):
+    c = data["customer"]
+    r = logged_in.post(f"/customers/{c.id}/remind-later", data={
+        "csrf_token": logged_in.csrf, "on": "2020-01-01", "at": "10:00", "note": "old"})
+    assert r.status_code == 400 and "Choose a time in the future" in r.text and 'value="old"' in r.text
+
+
+def test_pause_one_customer(logged_in, db, data):
+    c = data["customer"]
+    logged_in.post(f"/customers/{c.id}/pause", data={"csrf_token": logged_in.csrf})
+    db.refresh(c)
+    assert c.reminders_paused
+    logged_in.post(f"/customers/{c.id}/pause", data={"csrf_token": logged_in.csrf})
+    db.refresh(c)
+    assert not c.reminders_paused
+
+
+def test_promise_done_stops_following_up(logged_in, db, data):
+    from app.models import Message
+
+    m = Message(customer=data["customer"], kind="one_off", run_date=clock.today(), is_promise=True, status="sent")
+    db.add(m)
+    db.commit()
+    assert logged_in.post(f"/messages/{m.id}/promise-done", data={"csrf_token": logged_in.csrf}).headers["location"] == "/"
+    db.refresh(m)
+    assert m.is_promise is False
+
+
+def test_save_sending_hours(logged_in, db):
+    from app import settings
+
+    r = logged_in.post("/settings/sending", data={"csrf_token": logged_in.csrf, "run_hour": "11", "window_start": "8",
+                                                   "window_end": "19"}, follow_redirects=True)
+    assert "Reminders go out from 11:00" in r.text
+    got = (settings.get_int(db, "reminder_run_hour"), settings.get_int(db, "send_window_start"), settings.get_int(db, "send_window_end"))
+    assert got == (11, 8, 19)
+
+
+def test_send_time_outside_sending_hours_refused(logged_in, db):
+    from app import settings
+
+    r = logged_in.post("/settings/sending", data={"csrf_token": logged_in.csrf, "run_hour": "20", "window_start": "9",
+                                                   "window_end": "19"}, follow_redirects=True)
+    assert "must be within the sending hours" in r.text
+    assert settings.get_int(db, "reminder_run_hour") == 10
+
+
+def test_add_edit_and_remove_a_schedule_step(logged_in, db):
+    r = logged_in.post("/rules", data={"csrf_token": logged_in.csrf, "days": "45", "when": "after",
+                                       "template": "payment_final_notice"}, follow_redirects=True)
+    assert "Added: 45 days after due." in r.text
+    rule = db.query(ReminderRule).filter_by(offset_days=45).one()
+    logged_in.post(f"/rules/{rule.id}", data={"csrf_token": logged_in.csrf, "days": "60", "when": "after",
+                                              "template": "payment_overdue_firm"})
+    db.refresh(rule)
+    assert (rule.offset_days, rule.template_name, rule.name) == (60, "payment_overdue_firm", "60 days after due")
+    logged_in.post(f"/rules/{rule.id}/delete", data={"csrf_token": logged_in.csrf})
+    assert db.query(ReminderRule).filter_by(offset_days=60).count() == 0
+
+
+def test_step_on_due_date_and_before(logged_in, db):
+    db.query(ReminderRule).filter(ReminderRule.offset_days.in_([0, -3])).delete()
+    db.commit()
+    logged_in.post("/rules", data={"csrf_token": logged_in.csrf, "days": "9", "when": "on", "template": "payment_due_today"})
+    logged_in.post("/rules", data={"csrf_token": logged_in.csrf, "days": "2", "when": "before", "template": "payment_reminder_upcoming"})
+    assert {r.offset_days for r in db.query(ReminderRule)} >= {0, -2}
+
+
+@pytest.mark.parametrize("fields,message", [
+    ({"days": "7", "when": "after", "template": "payment_overdue"}, "There is already a step for 7 days after due"),
+    ({"days": "0", "when": "after", "template": "payment_overdue"}, "Enter how many days"),
+    ({"days": "400", "when": "after", "template": "payment_overdue"}, "Choose up to"),
+    ({"days": "5", "when": "after", "template": "rude_message"}, "Choose a tone"),
+])
+def test_bad_schedule_steps_refused(logged_in, db, fields, message):
+    before = db.query(ReminderRule).count()
+    r = logged_in.post("/rules", data={"csrf_token": logged_in.csrf, **fields}, follow_redirects=True)
+    assert message in r.text
+    assert db.query(ReminderRule).count() == before
+
+
+def test_removing_a_used_step_keeps_message_history(logged_in, db, data):
+    from app.models import Message
+
+    c = data["customer"]
+    rule = db.query(ReminderRule).filter_by(offset_days=15).one()
+    db.add(Message(customer=c, rule=rule, run_date=clock.today(), status="sent"))
+    db.commit()
+    logged_in.post(f"/rules/{rule.id}/delete", data={"csrf_token": logged_in.csrf})
+    m = db.query(Message).one()
+    assert m.rule_id is None
+    assert logged_in.get("/messages").status_code == 200

@@ -5,14 +5,40 @@
 <div class="page-head">
   <div>
     <h1>Reminder schedule</h1>
-    <p class="muted">When a bill reaches one of these days, the customer gets a WhatsApp reminder for everything they owe.
-      They get at most one a day, and its tone follows their oldest unpaid bill.</p>
+    <p class="muted">When a bill reaches one of these days, the customer gets a WhatsApp reminder for what they owe.
+      They get at most one a day, and its tone follows their oldest unpaid bill. If a day is missed, the
+      reminder still goes out up to {{ grace }} days later.</p>
   </div>
 </div>
+
+{% macro step_fields(prefix, r=None) %}
+  {% set off = r.offset_days if r else 7 %}
+  {% set when = 'on' if off == 0 else ('before' if off < 0 else 'after') %}
+  <div class="field">
+    <label for="{{ prefix }}-days">Days</label>
+    <input id="{{ prefix }}-days" name="days" type="number" min="1" max="365" value="{{ off | abs if off else 1 }}">
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-when">When</label>
+    <select id="{{ prefix }}-when" name="when">
+      <option value="before" {{ 'selected' if when == 'before' }}>before the due date</option>
+      <option value="on" {{ 'selected' if when == 'on' }}>on the due date (days ignored)</option>
+      <option value="after" {{ 'selected' if when == 'after' }}>after the due date</option>
+    </select>
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-tone">Tone</label>
+    <select id="{{ prefix }}-tone" name="template">
+      {% for key, label in tones.items() %}<option value="{{ key }}" {{ 'selected' if r and r.template_name == key }}>{{ label }}</option>{% endfor %}
+    </select>
+  </div>
+{% endmacro %}
+
 <div class="card">
+  {% if rules %}
   <ul class="list">
     {% for r in rules %}
-    <li>
+    <li style="flex-wrap: wrap">
       <div class="grow">
         <div class="title">{{ r.offset_days | days_text }}</div>
         <div class="muted small">{{ r.template_name | tone }}</div>
@@ -21,8 +47,29 @@
       <form method="post" action="/rules/{{ r.id }}/toggle" class="end">{{ csrf_input(request) }}
         <button class="secondary" aria-label="{{ 'Turn off' if r.is_active else 'Turn on' }}: {{ r.offset_days | days_text }}">{{ 'Turn off' if r.is_active else 'Turn on' }}</button>
       </form>
+      <details style="flex-basis: 100%">
+        <summary class="small">Change or remove</summary>
+        <form method="post" action="/rules/{{ r.id }}" class="form-grid">{{ csrf_input(request) }}
+          {{ step_fields('r' ~ r.id, r) }}
+          <div class="field"><button class="secondary">Save</button></div>
+        </form>
+        <form method="post" action="/rules/{{ r.id }}/delete" class="section">{{ csrf_input(request) }}
+          <button class="danger">Remove this step</button>
+        </form>
+      </details>
     </li>
     {% endfor %}
   </ul>
+  {% else %}
+  <p class="empty">No steps yet, so no automatic reminders go out. Add one below.</p>
+  {% endif %}
 </div>
+
+<section class="card section" aria-labelledby="add">
+  <h2 id="add">Add a step</h2>
+  <form method="post" action="/rules" class="form-grid">{{ csrf_input(request) }}
+    {{ step_fields('new') }}
+    <div class="field"><button>Add step</button></div>
+  </form>
+</section>
 {% endblock %}

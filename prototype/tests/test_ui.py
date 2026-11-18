@@ -41,6 +41,13 @@ def test_overdue_text(days, expected):
     assert ui.overdue_text(days) == expected
 
 
+def test_when_phrase():
+    today = date(2026, 11, 18)
+    assert ui.when_phrase(date(2026, 11, 18), today) == "today"
+    assert ui.when_phrase(date(2026, 11, 19), today, "for") == "tomorrow"
+    assert ui.when_phrase(date(2026, 11, 25), today, "by") == "by 25 Nov"
+
+
 def test_tone_and_status_labels():
     assert ui.tone("payment_final_notice") == "Final notice"
     assert ui.tone("some_new_template") == "Some new template"

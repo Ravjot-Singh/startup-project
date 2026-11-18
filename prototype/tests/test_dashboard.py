@@ -5,7 +5,8 @@ from decimal import Decimal
 
 from app import settings
 from app.dashboard import build_today
-from app.models import Customer, ImportBatch, InboundMessage, Invoice, Receipt, ReminderLog, ReminderRule
+from app.models import Customer, ImportBatch, InboundMessage, Invoice, Message, Receipt, ReminderRule
+from app.reminders.engine import plan_reminders, schedule_one_off
 from app.payments import record_payment
 from app.reminders.engine import run_reminders
 from app.whatsapp.provider import DryRunProvider
@@ -63,9 +64,9 @@ def test_needs_you(db):
     db.add_all([
         InboundMessage(customer=a, phone=a.phone, text="Will pay Monday"),
         InboundMessage(customer=a, phone=a.phone, text="old", handled=True),
-        ReminderLog(customer_id=a.id, rule_id=rule.id, run_date=TODAY - timedelta(days=1), invoice_nos="L1",
+        Message(customer_id=a.id, rule_id=rule.id, run_date=TODAY - timedelta(days=1), invoice_nos="L1",
                     amount_due=Decimal(1000), message_preview="x", status="failed", error="131026: not on WhatsApp"),
-        ReminderLog(customer_id=a.id, rule_id=rule.id, run_date=TODAY - timedelta(days=9), invoice_nos="L1",
+        Message(customer_id=a.id, rule_id=rule.id, run_date=TODAY - timedelta(days=9), invoice_nos="L1",
                     amount_due=Decimal(1000), message_preview="x", status="failed", error="too old to show"),
     ])
     db.commit()
@@ -85,7 +86,7 @@ def test_needs_count_matches_rows_not_customers(db):
 
 
 def _states(v):
-    return {o.plan.customer.name: (o.state, o.note) for o in v.outgoing}
+    return {o.customer.name: (o.state, o.note) for o in v.outgoing}
 
 
 def test_going_out_today_before_and_after_run(db):
@@ -93,14 +94,14 @@ def test_going_out_today_before_and_after_run(db):
     bill(db, due, "D1", days_overdue=0)
     nophone = cust(db, "No Number", phone=None)
     bill(db, nophone, "X1", days_overdue=7)
-    bill(db, cust(db, "Not Today", phone="919800000003"), "Z1", days_overdue=5)  # no rule at 5 days
+    bill(db, cust(db, "Not Today", phone="919800000003"), "Z1", days_overdue=6)  # between steps
 
     before = build_today(db, NOW.replace(hour=8))
     assert _states(before) == {"Due Today": ("waiting", "Sends at 10:00"), "No Number": ("skipped", "Won't send: no phone number")}
 
     run_reminders(db, DryRunProvider(), today=TODAY, now=NOW)
     after = build_today(db, NOW)
-    assert _states(after) == {"Due Today": ("sent", "Sent (test mode)"), "No Number": ("skipped", "Not sent: no phone number")}
+    assert _states(after) == {"Due Today": ("sent", "Sent (test mode)"), "No Number": ("skipped", "Won't send: no phone number")}
 
 
 def test_going_out_today_paused_and_outside_hours(db):
@@ -111,13 +112,14 @@ def test_going_out_today_paused_and_outside_hours(db):
 
 
 def test_preview_matches_what_the_run_sends(db):
-    for i, offset in enumerate((-3, 0, 3, 7, 15, 30, 4, 9)):
+    for i, offset in enumerate((-3, 0, 3, 7, 15, 30, 6, 10, 5)):
         bill(db, cust(db, f"C{i}", phone=f"9198000001{i:02d}"), f"B{i}", days_overdue=offset)
-    preview = {o.plan.customer.name: o.plan.rule.template_name for o in build_today(db, NOW).outgoing}
+    preview = {p.customer.name: p.rule.template_name for p in plan_reminders(db, TODAY)}
+    assert len([o for o in build_today(db, NOW).outgoing if o.state == "waiting"]) == len(preview)
     p = DryRunProvider()
     run_reminders(db, p, today=TODAY, now=NOW)
     sent = {name: template for (_, template, (name, *_)) in p.sent}
-    assert preview == sent and len(sent) == 6
+    assert preview == sent and len(sent) == 7  # 6 on their step day + 1 two days late (grace)
 
 
 def test_last_import_age(db):
@@ -125,3 +127,42 @@ def test_last_import_age(db):
     db.commit()
     v = build_today(db, NOW)
     assert v.has_data and v.import_age_days == 4
+
+
+
+def test_one_off_later_today_shows_its_time(db):
+    c = cust(db, "Promised")
+    bill(db, c, "P1", days_overdue=40)
+    schedule_one_off(db, c, NOW.replace(hour=15), note="said 3pm", is_promise=True, now=NOW)
+    o = next(o for o in build_today(db, NOW).outgoing if o.customer.name == "Promised")
+    assert (o.state, o.label) == ("waiting", "Promise reminder")
+    assert o.note == "Sends at 15:00 · said 3pm"
+
+
+def test_retrying_message_shows_attempts(db):
+    c = cust(db, "Retry")
+    bill(db, c, "R1", days_overdue=40)
+    db.add(Message(customer=c, kind="manual", run_date=TODAY, scheduled_for=NOW, status="queued", attempts=1, error="network error"))
+    db.commit()
+    o = next(o for o in build_today(db, NOW).outgoing if o.customer.name == "Retry")
+    assert o.state == "waiting" and o.note.startswith("Retrying (tried 1 of 3)")
+
+
+def test_missed_promise_needs_you_until_money_comes_in(db):
+    c = cust(db, "Promiser")
+    inv = bill(db, c, "P1", days_overdue=40, amount=3000)
+    msg = schedule_one_off(db, c, NOW - timedelta(days=3), is_promise=True, now=NOW - timedelta(days=5))
+    msg.status = "sent"
+    db.commit()
+    v = build_today(db, NOW)
+    assert [(p.message.customer.name, p.owed) for p in v.promises] == [("Promiser", Decimal(3000))]
+    record_payment(db, c, Decimal(500), TODAY, allocations={inv.id: Decimal(500)})
+    assert build_today(db, NOW).promises == []
+
+
+def test_old_or_unmade_promises_are_not_shown(db):
+    c = cust(db, "Old")
+    bill(db, c, "O1", days_overdue=60)
+    schedule_one_off(db, c, NOW - timedelta(days=20), is_promise=True, now=NOW - timedelta(days=25))
+    schedule_one_off(db, c, NOW - timedelta(days=2), is_promise=False, now=NOW - timedelta(days=4))
+    assert build_today(db, NOW).promises == []

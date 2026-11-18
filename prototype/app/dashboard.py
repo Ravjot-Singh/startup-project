@@ -1,31 +1,56 @@
 """Everything the Today page shows, most important first:
 
 1. Three numbers: collected in the last 7 days, due to you, overdue.
-2. Needs you: replies to read, messages that failed, customers to call, customers we can't message.
-3. Going out today: what the automatic run sends (or sent) today, and why someone is left out.
+2. Needs you: replies to read, messages that failed, missed payment promises, customers to call,
+   customers we can't message.
+3. Going out today: what has gone out, what is waiting (and until when), and who is left out and why.
 4. Details (folded away): ageing and biggest dues.
 """
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
-from app import config, settings
-from app.models import OPENING, UNPAID_STATUSES, ImportBatch, InboundMessage, Invoice, Receipt, ReminderLog
-from app.reminders.engine import PlannedReminder, call_list, plan_reminders
+from app import config, settings, ui
+from app.models import (
+    CANCELLED,
+    FAILED,
+    KIND_MANUAL,
+    KIND_ONE_OFF,
+    OPENING,
+    QUEUED,
+    SKIPPED,
+    UNPAID_STATUSES,
+    Customer,
+    ImportBatch,
+    InboundMessage,
+    Invoice,
+    Message,
+    Receipt,
+)
+from app.payments import outstanding
+from app.reminders.engine import MAX_ATTEMPTS, call_list, plan_reminders
 
 CALL_AFTER_DAYS = 15
-SENT_STATUSES = ("sent", "delivered", "read", "dryrun")
+PROMISE_FOLLOW_UP_DAYS = 14  # a missed promise stays under "Needs you" this long
 
 
 @dataclass
 class OutgoingItem:
-    plan: PlannedReminder
-    state: str  # "sent" | "failed" | "skipped" | "waiting" | "paused"
+    customer: Customer
+    label: str       # tone or kind of message
+    amount: Decimal
+    state: str       # "sent" | "failed" | "skipped" | "waiting" | "paused" | "cancelled"
     note: str
+
+
+@dataclass
+class MissedPromise:
+    message: Message
+    owed: Decimal
 
 
 @dataclass
@@ -53,7 +78,8 @@ class TodayView:
     customers_overdue: int
     replies: list[InboundMessage]
     replies_count: int
-    failed: list[ReminderLog]
+    failed: list[Message]
+    promises: list[MissedPromise]
     to_call: list[dict]
     to_call_count: int
     no_phone_count: int
@@ -66,7 +92,12 @@ class TodayView:
     @property
     def needs_count(self) -> int:
         """Number of things to look at, matching the rows shown (each group of customers is one row)."""
-        return self.replies_count + len(self.failed) + (1 if self.to_call_count else 0) + (1 if self.no_phone_count else 0)
+        return (self.replies_count + len(self.failed) + len(self.promises)
+                + (1 if self.to_call_count else 0) + (1 if self.no_phone_count else 0))
+
+    @property
+    def has_waiting(self) -> bool:
+        return any(o.state == "waiting" for o in self.outgoing)
 
     @property
     def has_data(self) -> bool:
@@ -87,28 +118,81 @@ def sending_status(db: Session) -> SendingStatus:
     )
 
 
-def _outgoing(plan: list[PlannedReminder], status: SendingStatus, now: datetime) -> list[OutgoingItem]:
+def _label(msg: Message) -> str:
+    return ui.message_label(msg)
+
+
+def _waiting_note(status: SendingStatus, now: datetime, at: datetime | None) -> tuple[str, str]:
+    if status.paused:
+        return "paused", "Paused"
+    if at and at > now:
+        return "waiting", f"Sends at {at:%H:%M}"
+    if not (status.window_start <= now.hour < status.window_end):
+        return "waiting", f"Outside sending hours, next chance {status.window_start}:00"
+    return "waiting", "Sending in the next few minutes"
+
+
+def _outgoing(db: Session, status: SendingStatus, now: datetime, balances: dict[int, Decimal]) -> list[OutgoingItem]:
+    today = now.date()
     items = []
-    for p in plan:
-        log = p.existing
-        if log and log.status in SENT_STATUSES:
-            items.append(OutgoingItem(p, "sent", "Sent" if log.status != "dryrun" else "Sent (test mode)"))
-        elif log and log.status == "failed":
-            items.append(OutgoingItem(p, "failed", f"Failed: {log.error or 'unknown error'}"))
-        elif log and log.status == "skipped":
-            items.append(OutgoingItem(p, "skipped", f"Not sent: {log.error}"))
-        elif p.skip_reason:
-            items.append(OutgoingItem(p, "skipped", f"Won't send: {p.skip_reason}"))
-        elif status.paused:
-            items.append(OutgoingItem(p, "paused", "Paused"))
-        elif now.hour < status.run_hour:
-            items.append(OutgoingItem(p, "waiting", f"Sends at {status.run_hour}:00"))
-        elif not (status.window_start <= now.hour < status.window_end):
-            items.append(OutgoingItem(p, "waiting", f"Outside sending hours, next chance {status.window_start}:00 tomorrow"))
+    todays = db.scalars(
+        select(Message).options(joinedload(Message.customer))
+        .where(or_(Message.run_date == today,
+                   Message.scheduled_for.between(datetime.combine(today, time.min), datetime.combine(today, time.max))))
+    ).all()
+    seen_ids = set()
+    for m in todays:
+        seen_ids.add(m.id)
+        amount = m.amount_due if m.is_sent or m.status in (FAILED,) else balances.get(m.customer_id, Decimal(0))
+        if m.is_sent:
+            items.append(OutgoingItem(m.customer, _label(m), amount, "sent", "Sent (test mode)" if m.status == "dryrun" else "Sent"))
+        elif m.status == FAILED:
+            items.append(OutgoingItem(m.customer, _label(m), amount, "failed", f"Failed: {m.error or 'unknown error'}"))
+        elif m.status == SKIPPED:
+            items.append(OutgoingItem(m.customer, _label(m), amount, "skipped", f"Not sent: {m.error}"))
+        elif m.status == CANCELLED:
+            items.append(OutgoingItem(m.customer, _label(m), amount, "cancelled", f"Not needed: {(m.error or '').lower()}"))
+        elif m.status == QUEUED and m.attempts:
+            items.append(OutgoingItem(m.customer, _label(m), amount, "waiting",
+                                      f"Retrying (tried {m.attempts} of {MAX_ATTEMPTS}): {m.error}"))
+        elif m.status == QUEUED:
+            state, note = _waiting_note(status, now, m.scheduled_for)
+            if m.kind == KIND_ONE_OFF and m.note:
+                note += f" · {m.note}"
+            items.append(OutgoingItem(m.customer, _label(m), amount, state, note))
+
+    for p in plan_reminders(db, today):
+        if p.existing:
+            continue
+        label = ui.tone(p.rule.template_name)
+        if p.skip_reason:
+            items.append(OutgoingItem(p.customer, label, p.total, "skipped", f"Won't send: {p.skip_reason}"))
+        elif now.hour < status.run_hour and not status.paused:
+            items.append(OutgoingItem(p.customer, label, p.total, "waiting", f"Sends at {status.run_hour}:00"))
         else:
-            items.append(OutgoingItem(p, "waiting", "Sending in the next few minutes"))
-    order = {"failed": 0, "waiting": 1, "paused": 1, "sent": 2, "skipped": 3}
-    return sorted(items, key=lambda i: (order[i.state], i.plan.customer.display_name.lower()))
+            state, note = _waiting_note(status, now, None)
+            items.append(OutgoingItem(p.customer, label, p.total, state, note))
+
+    order = {"failed": 0, "waiting": 1, "paused": 1, "sent": 2, "skipped": 3, "cancelled": 4}
+    return sorted(items, key=lambda i: (order[i.state], i.customer.display_name.lower()))
+
+
+def _missed_promises(db: Session, today: date, balances: dict[int, Decimal]) -> list[MissedPromise]:
+    """Customers who promised to pay by a date that has passed, still owe, and haven't paid anything since."""
+    promises = db.scalars(
+        select(Message).options(joinedload(Message.customer))
+        .where(Message.kind == KIND_ONE_OFF, Message.is_promise.is_(True), Message.run_date < today,
+               Message.run_date >= today - timedelta(days=PROMISE_FOLLOW_UP_DAYS))
+        .order_by(Message.run_date)
+    ).all()
+    out = []
+    for m in promises:
+        owed = balances.get(m.customer_id, Decimal(0))
+        paid_since = db.scalar(select(Receipt.id).where(
+            Receipt.customer_id == m.customer_id, Receipt.source != OPENING, Receipt.created_at >= m.created_at).limit(1))
+        if owed > 0 and not paid_since:
+            out.append(MissedPromise(m, owed))
+    return out
 
 
 def buckets(invoices: list[Invoice], today: date) -> dict[str, Decimal]:
@@ -135,6 +219,7 @@ def build_today(db: Session, now: datetime) -> TodayView:
         r = per_customer.setdefault(i.customer_id, {"customer": i.customer, "total": Decimal(0), "overdue": False})
         r["total"] += i.balance
         r["overdue"] |= i.days_overdue(today) > 0
+    balances = {cid: r["total"] for cid, r in per_customer.items()}
 
     # Money received in the last 7 days: typed in here or newly shown as paid in Busy (not opening history)
     collected = db.scalar(
@@ -145,9 +230,9 @@ def build_today(db: Session, now: datetime) -> TodayView:
     replies = db.scalars(reply_q.options(joinedload(InboundMessage.customer)).order_by(InboundMessage.id.desc()).limit(5)).all()
     replies_count = db.scalar(select(func.count()).select_from(reply_q.subquery()))
     failed = db.scalars(
-        select(ReminderLog).options(joinedload(ReminderLog.customer))
-        .where(ReminderLog.status == "failed", ReminderLog.run_date > today - timedelta(days=7))
-        .order_by(ReminderLog.id.desc()).limit(5)
+        select(Message).options(joinedload(Message.customer))
+        .where(Message.status == FAILED, Message.run_date > today - timedelta(days=7))
+        .order_by(Message.id.desc()).limit(5)
     ).all()
     to_call = call_list(db, today=today, min_days_overdue=CALL_AFTER_DAYS)
     status = sending_status(db)
@@ -162,10 +247,11 @@ def build_today(db: Session, now: datetime) -> TodayView:
         replies=list(replies),
         replies_count=replies_count or 0,
         failed=list(failed),
+        promises=_missed_promises(db, today, outstanding(db)),
         to_call=to_call[:3],
         to_call_count=len(to_call),
         no_phone_count=sum(1 for r in per_customer.values() if not r["customer"].phone),
-        outgoing=_outgoing(plan_reminders(db, today), status, now),
+        outgoing=_outgoing(db, status, now, balances),
         status=status,
         last_import=db.scalar(select(ImportBatch).order_by(ImportBatch.id.desc()).limit(1)),
         buckets=buckets(unpaid, today),

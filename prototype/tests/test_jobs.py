@@ -7,7 +7,8 @@ import pytest
 
 from app import config, settings
 from app.jobs import run_tick
-from app.models import Customer, Invoice, ReminderLog
+from app.models import Customer, Invoice, Message
+from app.reminders.engine import schedule_one_off
 from app.whatsapp.provider import DryRunProvider
 
 TOKEN = "t" * 32
@@ -60,8 +61,7 @@ def test_tick_sends_once_even_if_called_repeatedly(db):
     second = run_tick(db, p, now=DAY.replace(hour=10, minute=15))
     third = run_tick(db, p, now=DAY.replace(hour=14))
     assert first["sent"] == 1 and second["sent"] == 0 and third["sent"] == 0
-    assert second["already_done"] == 1
-    assert len(p.sent) == 1 and db.query(ReminderLog).count() == 1
+    assert len(p.sent) == 1 and db.query(Message).count() == 1
 
 
 def test_tick_respects_pause_switch(db):
@@ -86,3 +86,26 @@ def test_tick_outside_send_window(db):
     p = DryRunProvider()
     assert run_tick(db, p, now=DAY.replace(hour=21))["reminders"] == "outside send window"
     assert p.sent == []
+
+
+def test_tick_before_run_hour_still_sends_a_due_one_off(db):
+    _due_today_customer(db)
+    c = db.query(Customer).one()
+    schedule_one_off(db, c, DAY.replace(hour=9, minute=30), now=DAY.replace(hour=8))
+    p = DryRunProvider()
+    r = run_tick(db, p, now=DAY.replace(hour=9, minute=30))
+    assert r["reminders"] == "waiting until 10:00" and r["sent"] == 1
+    assert len(p.sent) == 1
+
+
+def test_paused_holds_one_offs_too(db):
+    _due_today_customer(db)
+    c = db.query(Customer).one()
+    schedule_one_off(db, c, DAY.replace(hour=11), now=DAY.replace(hour=8))
+    settings.set_value(db, "sending_paused", True)
+    p = DryRunProvider()
+    run_tick(db, p, now=DAY.replace(hour=11, minute=5))
+    assert p.sent == []
+    settings.set_value(db, "sending_paused", False)
+    run_tick(db, p, now=DAY.replace(hour=11, minute=15))
+    assert len(p.sent) == 2  # the one-off plus the day's scheduled reminder

@@ -20,7 +20,7 @@ from sqlalchemy.orm import sessionmaker  # noqa: E402
 
 from app import clock, config  # noqa: E402
 from app.db import Base, get_db, init_db, make_engine  # noqa: E402
-from app.models import Customer, ImportBatch, InboundMessage, Invoice, ReminderLog, ReminderRule  # noqa: E402
+from app.models import Customer, ImportBatch, InboundMessage, Invoice, Message, ReminderRule  # noqa: E402
 from app.seed import seed_rules  # noqa: E402
 
 AXE_URL = "https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.10.2/axe.min.js"
@@ -49,7 +49,7 @@ def _seed(db) -> int:
     rule = db.query(ReminderRule).first()
     db.add_all([
         InboundMessage(customer=a, phone=a.phone, text="Will pay on Friday"),
-        ReminderLog(customer_id=a.id, rule_id=rule.id, run_date=today, invoice_nos="INV1", amount_due=Decimal(15000),
+        Message(customer_id=a.id, rule_id=rule.id, template_name=rule.template_name, run_date=today, invoice_nos="INV1", amount_due=Decimal(15000),
                     message_preview="Namaste Sharma General Store, ...", status="failed", error="131026: not on WhatsApp"),
         ImportBatch(file_name="busy-outstanding.xlsx", rows_ok=3),
     ])
