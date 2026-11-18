@@ -31,7 +31,8 @@ from app.models import (
     ReminderStep,
     ReminderRule,
 )
-from app.reminders import engine
+from app.reminders import engine, followups
+from app import storage
 from app.reminders.engine import call_list, run_reminders
 from app.security import csrf_input, csrf_protect
 from app.whatsapp.provider import get_provider
@@ -185,10 +186,19 @@ def customer_edit(
     salesman: str = Form(""),
     whatsapp_opt_in: bool = Form(False),
     reminders_paused: bool = Form(False),
+    marketing_opt_in: bool = Form(False),
+    consent_source: str = Form(""),
     db: Session = Depends(get_db),
     user: str = Depends(require_login),
 ):
     c = db.get(Customer, cid) or _404()
+    if marketing_opt_in and not c.marketing_opt_in:
+        if not consent_source.strip():
+            return redirect(f"/customers/{cid}?error=" + quote_plus("Say how they agreed to offers (e.g. asked in person on 18 Nov)"))
+        c.marketing_consent_at, c.marketing_consent_source = clock.now(), consent_source.strip()[:200]
+    elif not marketing_opt_in:
+        c.marketing_consent_at = c.marketing_consent_source = None
+    c.marketing_opt_in = marketing_opt_in
     if phone.strip():
         normalized = normalize_phone(phone)
         if not normalized:
@@ -404,8 +414,51 @@ def reply_handled(mid: int, request: Request, next: str = Form(""), db: Session 
 def settings_page(request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
     rules = db.scalars(select(ReminderRule).order_by(ReminderRule.offset_days)).all()
     last_import = db.scalar(select(ImportBatch).order_by(ImportBatch.id.desc()).limit(1))
-    return render(request, "settings.html", {"status": sending_status(db), "rules": rules, "last_import": last_import, "user": user,
-                                             "auto_bills": settings.get_bool(db, "send_bills_automatically")})
+    return render(request, "settings.html", {
+        "status": sending_status(db), "rules": rules, "last_import": last_import, "user": user,
+        "auto_bills": settings.get_bool(db, "send_bills_automatically"),
+        "thanks_on": settings.get_bool(db, "send_thank_you"), "reorder_on": settings.get_bool(db, "send_reorder_invites"),
+        "fallback_days": settings.get_int(db, "reorder_fallback_days"), "catalogue": followups.current_catalogue(db),
+    })
+
+
+@router.post("/settings/followups")
+def save_followups(request: Request, send_thank_you: bool = Form(False), send_reorder_invites: bool = Form(False),
+                   reorder_fallback_days: int = Form(7), db: Session = Depends(get_db), user: str = Depends(require_login)):
+    if not 1 <= reorder_fallback_days <= 90:
+        flash(request, "Choose between 1 and 90 days.", "error")
+        return redirect("/settings")
+    settings.set_value(db, "send_thank_you", send_thank_you)
+    settings.set_value(db, "send_reorder_invites", send_reorder_invites)
+    settings.set_value(db, "reorder_fallback_days", reorder_fallback_days)
+    flash(request, "Saved.")
+    return redirect("/settings")
+
+
+@router.post("/settings/catalogue")
+async def upload_catalogue(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db),
+                           user: str = Depends(require_login)):
+    try:
+        followups.set_catalogue(db, file.filename or "catalogue.pdf", await file.read())
+    except storage.StorageError as e:
+        db.rollback()
+        flash(request, str(e), "error")
+        return redirect("/settings")
+    flash(request, "Catalogue saved. Reorder invites will send it.")
+    return redirect("/settings")
+
+
+@router.post("/settings/catalogue/remove")
+def remove_catalogue(request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
+    followups.remove_catalogue(db)
+    flash(request, "Catalogue removed. Reorder invites wait until you upload a new one.", "warn")
+    return redirect("/settings")
+
+
+@router.get("/catalogue.pdf")
+def view_catalogue(db: Session = Depends(get_db), user: str = Depends(require_login)):
+    f = followups.current_catalogue(db) or _404()
+    return Response(f.data, media_type=f.content_type, headers={"Content-Disposition": f'inline; filename="{f.filename}"'})
 
 
 @router.post("/settings/pause")

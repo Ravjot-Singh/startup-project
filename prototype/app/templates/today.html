@@ -85,6 +85,15 @@
       </form>
     </li>
     {% endfor %}
+    {% if v.invites_without_catalogue %}
+    <li>
+      <div class="grow">
+        <div class="title">{{ v.invites_without_catalogue }} reorder invite{{ 's are' if v.invites_without_catalogue != 1 else ' is' }} waiting for a catalogue</div>
+        <div class="muted small">Upload your catalogue PDF so it can be sent with them.</div>
+      </div>
+      <a class="btn secondary end" href="/settings#after">Upload catalogue</a>
+    </li>
+    {% endif %}
     {% if v.to_call_count %}
     <li>
       <div class="grow">
@@ -126,7 +135,7 @@
         <div class="muted small">{{ o.label }} · {{ o.note }}</div>
       </div>
       <div class="end">
-        <div class="money">₹{{ o.amount | inr }}</div>
+        {% if o.amount %}<div class="money">₹{{ o.amount | inr }}</div>{% endif %}
         <span class="badge {{ {'sent':'ok','failed':'failed','skipped':'skipped','waiting':'pending','paused':'paused','cancelled':'info'}[o.state] }}">{{ {'sent':'Sent','failed':'Failed','skipped':'Not sent','waiting':'Waiting','paused':'Paused','cancelled':'Not needed'}[o.state] }}</span>
       </div>
     </li>

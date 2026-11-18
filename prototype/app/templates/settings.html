@@ -48,6 +48,41 @@
   </form>
 </section>
 
+<section class="card section" aria-labelledby="after-h" id="after">
+  <h2 id="after-h">After full payment</h2>
+  <p class="muted small">When a customer has paid everything, they get a thank-you. Customers who agreed to offers also get an
+    invitation to order again, with your catalogue, around when they usually order (their usual gap between bills, or the
+    number of days below if they have few bills). It's cancelled if they order first.</p>
+  <form method="post" action="/settings/followups" class="form-grid">{{ csrf_input(request) }}
+    <label class="check"><input type="checkbox" name="send_thank_you" value="true" {{ 'checked' if thanks_on }}> Send a thank-you</label>
+    <label class="check"><input type="checkbox" name="send_reorder_invites" value="true" {{ 'checked' if reorder_on }}> Send reorder invites</label>
+    <div class="field">
+      <label for="fallback_days">Invite after (days), if their rhythm isn't known</label>
+      <input id="fallback_days" name="reorder_fallback_days" type="number" min="1" max="90" value="{{ fallback_days }}">
+    </div>
+    <div class="field"><button class="secondary">Save</button></div>
+  </form>
+  <div class="section">
+    <h3>Catalogue sent with invites</h3>
+    {% if catalogue %}
+    <p><a href="/catalogue.pdf" target="_blank" rel="noopener">{{ catalogue.filename }}</a>
+      <span class="muted small">· uploaded {{ catalogue.created_at | when(today) }}</span></p>
+    {% else %}<p class="muted">No catalogue yet. Reorder invites wait until you upload one.</p>{% endif %}
+    <form method="post" action="/settings/catalogue" enctype="multipart/form-data" class="form-grid">{{ csrf_input(request) }}
+      <div class="field">
+        <label for="catalogue-file">{{ 'Replace with a new PDF' if catalogue else 'Catalogue PDF' }}</label>
+        <input id="catalogue-file" type="file" name="file" accept=".pdf,application/pdf" required>
+      </div>
+      <div class="field"><button class="secondary">Upload</button></div>
+    </form>
+    {% if catalogue %}
+    <form method="post" action="/settings/catalogue/remove" class="section">{{ csrf_input(request) }}
+      <button class="danger">Remove catalogue</button>
+    </form>
+    {% endif %}
+  </div>
+</section>
+
 <section class="card section" aria-labelledby="schedule">
   <div class="card-head">
     <h2 id="schedule">Reminder schedule</h2>

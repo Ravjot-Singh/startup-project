@@ -469,3 +469,59 @@ def test_switch_automatic_bills_off_and_on(logged_in, db):
     assert settings.get_bool(db, "send_bills_automatically") is False and "won't be sent automatically" in r.text.replace("&#39;", "'")
     logged_in.post("/settings/bills", data={"csrf_token": logged_in.csrf})
     assert settings.get_bool(db, "send_bills_automatically") is True
+
+
+# ---------- Phase 5: consent, follow-up settings, catalogue ----------
+
+def _edit(client, cid, **extra):
+    fields = {"phone": "9800000001", "credit_days": "15", "area": "", "salesman": "", "whatsapp_opt_in": "true",
+              "csrf_token": client.csrf}
+    return client.post(f"/customers/{cid}/edit", data=fields | extra)
+
+
+def test_marketing_consent_needs_to_say_how(logged_in, db, data):
+    c = data["customer"]
+    r = _edit(logged_in, c.id, marketing_opt_in="true")
+    assert "error=" in r.headers["location"]
+    db.refresh(c)
+    assert c.marketing_opt_in is False
+    _edit(logged_in, c.id, marketing_opt_in="true", consent_source="asked in person at the shop")
+    db.refresh(c)
+    assert c.marketing_opt_in and c.marketing_consent_source == "asked in person at the shop" and c.marketing_consent_at
+    assert "Offers OK since" in logged_in.get(f"/customers/{c.id}").text
+    _edit(logged_in, c.id)  # unticked
+    db.refresh(c)
+    assert not c.marketing_opt_in and c.marketing_consent_at is None
+
+
+def test_follow_up_settings(logged_in, db):
+    from app import settings
+
+    logged_in.post("/settings/followups", data={"csrf_token": logged_in.csrf, "send_thank_you": "true", "reorder_fallback_days": "12"})
+    assert settings.get_bool(db, "send_thank_you") and not settings.get_bool(db, "send_reorder_invites")
+    assert settings.get_int(db, "reorder_fallback_days") == 12
+    r = logged_in.post("/settings/followups", data={"csrf_token": logged_in.csrf, "reorder_fallback_days": "400"}, follow_redirects=True)
+    assert "Choose between 1 and 90 days." in r.text and settings.get_int(db, "reorder_fallback_days") == 12
+
+
+def test_catalogue_upload_view_and_remove(logged_in):
+    assert "No catalogue yet" in logged_in.get("/settings").text
+    assert logged_in.get("/catalogue.pdf").status_code == 404
+    r = logged_in.post("/settings/catalogue", data={"csrf_token": logged_in.csrf},
+                       files={"file": ("Catalogue Nov.pdf", b"%PDF-1.4 cat", "application/pdf")}, follow_redirects=True)
+    assert "Catalogue saved." in r.text and "Catalogue Nov.pdf" in r.text
+    assert logged_in.get("/catalogue.pdf").content == b"%PDF-1.4 cat"
+    bad = logged_in.post("/settings/catalogue", data={"csrf_token": logged_in.csrf},
+                         files={"file": ("cat.docx", b"PK..", "application/octet-stream")}, follow_redirects=True)
+    assert "must be a PDF" in bad.text
+    logged_in.post("/settings/catalogue/remove", data={"csrf_token": logged_in.csrf})
+    assert logged_in.get("/catalogue.pdf").status_code == 404
+
+
+def test_today_warns_when_invites_wait_for_a_catalogue(logged_in, db, data):
+    from app.models import Message
+
+    db.add(Message(customer=data["customer"], kind="reorder", run_date=clock.today(), status="queued"))
+    db.commit()
+    html = logged_in.get("/").text
+    assert "1 reorder invite is waiting for a catalogue" in html and 'href="/settings#after"' in html

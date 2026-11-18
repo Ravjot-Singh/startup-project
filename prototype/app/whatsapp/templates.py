@@ -49,9 +49,24 @@ TEMPLATES["bill_document"] = (
 )
 BILL_TEMPLATE = "bill_document"
 
+# Once a customer has paid everything (Utility, no header). {{1}} customer, {{2}} amount just paid, {{3}} business
+TEMPLATES["payment_thanks"] = (
+    "Hi {{1}}, we have received your payment of Rs. {{2}}. Your account with {{3}} is now fully clear. Thank you!"
+)
+THANKS_TEMPLATE = "payment_thanks"
+
+# Invitation to order again (MARKETING, header: Document = the catalogue PDF). {{1}} customer, {{2}} business
+TEMPLATES["reorder_invite"] = (
+    "Hi {{1}}, thank you for your continued business with {{2}}. Our latest catalogue is attached. "
+    "Reply to this message to place your next order."
+)
+REORDER_TEMPLATE = "reorder_invite"
+
 # Reply words that switch WhatsApp messages off / on again (Meta expects opt-out to be honoured).
 STOP_WORDS = {"stop", "unsubscribe", "stop all", "band", "band karo", "no more"}
 START_WORDS = {"start", "subscribe", "resume"}
+# Meta's "Stop promotions" button and similar: marketing messages off, payment messages still allowed.
+MARKETING_STOP_WORDS = {"stop promotions", "stop offers", "no offers", "no promotions"}
 
 
 def render(template_name: str, params: list[str]) -> str:

@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from app import config
 from app.db import get_db
 from app.models import FAILED, Customer, InboundMessage, Message
-from app.whatsapp.templates import START_WORDS, STOP_WORDS
+from app.whatsapp.templates import MARKETING_STOP_WORDS, START_WORDS, STOP_WORDS
 
 router = APIRouter(prefix="/webhooks")
 log = logging.getLogger("reminders.webhook")
@@ -42,6 +42,9 @@ def apply_opt_out_words(customer: Customer | None, text: str) -> None:
         return
     if word in STOP_WORDS:
         customer.whatsapp_opt_in = False
+        customer.marketing_opt_in = False
+    elif word in MARKETING_STOP_WORDS:
+        customer.marketing_opt_in = False
     elif word in START_WORDS:
         customer.whatsapp_opt_in = True
 

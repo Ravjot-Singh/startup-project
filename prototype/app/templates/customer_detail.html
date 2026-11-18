@@ -15,6 +15,7 @@
     {% elif c.reminders_paused %}<span class="badge paused">Reminders paused</span>
     {% elif not c.whatsapp_opt_in %}<span class="badge skipped">Opted out</span>
     {% else %}<span class="badge ok">Reminders on</span>{% endif %}
+    {% if c.marketing_opt_in %}<div class="small muted">Offers OK since {{ c.marketing_consent_at | when(today) }}</div>{% endif %}
   </div>
 </div>
 {% if error %}<div class="alert error" role="alert">{{ error }}</div>{% endif %}
@@ -102,7 +103,7 @@
     {% for m in upcoming %}
     <li>
       <div class="grow">
-        <div class="title">{{ 'Payment promised: reminder' if m.is_promise else ('Retrying' if m.attempts else 'Reminder') }} {{ m.scheduled_for | when_phrase(today) }} at {{ m.scheduled_for.strftime('%H:%M') }}</div>
+        <div class="title">{{ 'Payment promised: reminder' if m.is_promise else (m | message_label) }}{{ ' (retrying)' if m.attempts }} {{ m.scheduled_for | when_phrase(today) }} at {{ m.scheduled_for.strftime('%H:%M') }}</div>
         <div class="muted small">{{ m.note or ('Tried ' ~ m.attempts ~ ' times: ' ~ m.error if m.attempts else 'Quotes whatever is owed at that time') }}</div>
       </div>
       <form method="post" action="/messages/{{ m.id }}/cancel" class="end">{{ csrf_input(request) }}
@@ -238,6 +239,11 @@
     </div>
     <label class="check"><input type="checkbox" name="whatsapp_opt_in" value="true" {{ 'checked' if c.whatsapp_opt_in }}> Agreed to WhatsApp messages</label>
     <label class="check"><input type="checkbox" name="reminders_paused" value="true" {{ 'checked' if c.reminders_paused }}> Pause reminders</label>
+    <label class="check"><input type="checkbox" name="marketing_opt_in" value="true" {{ 'checked' if c.marketing_opt_in }}> Agreed to offers and catalogues</label>
+    <div class="field">
+      <label for="consent_source">How they agreed <span class="help">(needed when ticking offers)</span></label>
+      <input id="consent_source" name="consent_source" maxlength="200" value="{{ c.marketing_consent_source or '' }}" placeholder="e.g. asked in person, 18 Nov">
+    </div>
     <div class="field"><button>Save</button></div>
   </form>
 </details>

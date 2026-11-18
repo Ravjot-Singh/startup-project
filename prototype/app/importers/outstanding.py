@@ -25,7 +25,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import clock
-from app.models import UNPAID_STATUSES, Customer, ImportBatch, Invoice, fiscal_year_of
+from app.models import IMPORT, UNPAID_STATUSES, Customer, ImportBatch, Invoice, Receipt, fiscal_year_of
 from app.payments import apply_busy_paid, outstanding, record_fully_paid
 from app.reminders.engine import queue_new_bills
 
@@ -422,9 +422,17 @@ def import_outstanding(
             apply_busy_paid(db, inv, Decimal(inv.amount), batch, today, first_seen=False)
         batch.marked_paid = len(stale)
 
-    record_fully_paid(db, before, before.keys())
+    db.flush()
+    paid_in_batch = dict(db.execute(
+        select(Receipt.customer_id, func.sum(Receipt.amount)).where(Receipt.import_batch_id == batch.id, Receipt.source == IMPORT)
+        .group_by(Receipt.customer_id)).all())
+    record_fully_paid(db, before, before.keys(), paid_in_batch)
 
     batch.errors = "\n".join(errors) if errors else None
     db.commit()
+    if new_bills:  # a new order: a pending "time to reorder" invite is no longer needed
+        from app.reminders.followups import cancel_reorders
+
+        cancel_reorders(db, {inv.customer_id for inv in new_bills})
     queued = queue_new_bills(db, new_bills, datetime.combine(today, clock.now().time()))
     return ImportResult(batch=batch, column_map=cmap, errors=errors, busy_behind=behind, bills_queued=len(queued))

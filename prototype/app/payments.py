@@ -76,8 +76,10 @@ def customer_credit(db: Session, customer_id: int) -> Decimal:
     return Decimal(received or 0) - Decimal(allocated or 0)
 
 
-def record_fully_paid(db: Session, before: dict[int, Decimal], customer_ids: Iterable[int]) -> list[int]:
-    """Add a 'fully_paid' event for each customer who owed money before and owes nothing now."""
+def record_fully_paid(db: Session, before: dict[int, Decimal], customer_ids: Iterable[int],
+                      amounts: dict[int, Decimal] | None = None) -> list[int]:
+    """Add a 'fully_paid' event for each customer who owed money before and owes nothing now.
+    amounts: the payment that cleared each customer's dues (shown in the thank-you message)."""
     ids = [cid for cid in set(customer_ids) if before.get(cid, Decimal(0)) > 0]
     if not ids:
         return []
@@ -85,7 +87,7 @@ def record_fully_paid(db: Session, before: dict[int, Decimal], customer_ids: Ite
     after = outstanding(db, ids)
     cleared = [cid for cid in ids if after.get(cid, Decimal(0)) <= 0]
     for cid in cleared:
-        db.add(CustomerEvent(customer_id=cid, kind=FULLY_PAID))
+        db.add(CustomerEvent(customer_id=cid, kind=FULLY_PAID, amount=(amounts or {}).get(cid)))
     return cleared
 
 
@@ -132,7 +134,7 @@ def record_payment(
     receipt = Receipt(customer=customer, amount=amount, received_on=received_on, mode=mode, note=note or None, source=MANUAL)
     db.add(receipt)
     _allocate(db, receipt, customer, allocs)
-    record_fully_paid(db, before, [customer.id])
+    record_fully_paid(db, before, [customer.id], {customer.id: amount})
     db.commit()
     return receipt
 
@@ -157,7 +159,7 @@ def apply_credit(db: Session, customer: Customer, allocations: dict[int, Decimal
                 remaining -= take
             if remaining <= 0:
                 break
-    record_fully_paid(db, before, [customer.id])
+    record_fully_paid(db, before, [customer.id], {customer.id: total})
     db.commit()
     return total
 

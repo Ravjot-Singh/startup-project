@@ -23,6 +23,13 @@ DEFAULTS: dict[str, Callable[[], str]] = {
     "sending_paused": lambda: "false",
     # Send each new bill's PDF on WhatsApp automatically after an upload from Busy.
     "send_bills_automatically": lambda: "true",
+    # Once a customer has paid everything: thank them, and later invite them to order again.
+    "send_thank_you": lambda: "true",
+    "send_reorder_invites": lambda: "true",
+    # Days after the last bill to invite a reorder, when a customer has too few bills to know their rhythm.
+    "reorder_fallback_days": lambda: "7",
+    # The catalogue PDF sent with reorder invites (a stored file id; empty = none uploaded yet).
+    "current_catalogue_file_id": lambda: "",
 }
 
 

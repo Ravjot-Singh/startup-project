@@ -51,6 +51,10 @@ class Customer(Base):
     shop_name: Mapped[str | None] = mapped_column(String(200))
     phone: Mapped[str | None] = mapped_column(String(20))  # E.164 without "+", e.g. 919876543210
     whatsapp_opt_in: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Separate, explicit agreement to receive catalogues, offers and reorder invites (marketing messages)
+    marketing_opt_in: Mapped[bool] = mapped_column(Boolean, default=False)
+    marketing_consent_at: Mapped[datetime | None] = mapped_column(DateTime)
+    marketing_consent_source: Mapped[str | None] = mapped_column(String(200))  # e.g. "told the owner in person"
     reminders_paused: Mapped[bool] = mapped_column(Boolean, default=False)
     credit_days: Mapped[int] = mapped_column(Integer, default=15)
     salesman: Mapped[str | None] = mapped_column(String(100))
@@ -163,6 +167,7 @@ class CustomerEvent(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id"), index=True)
     kind: Mapped[str] = mapped_column(String(40), index=True)
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))  # e.g. the payment that cleared the dues
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     handled_at: Mapped[datetime | None] = mapped_column(DateTime)
 
@@ -189,6 +194,8 @@ KIND_REMINDER = "reminder"  # automatic, from the schedule
 KIND_ONE_OFF = "one_off"    # the owner asked for a reminder on a date and time
 KIND_MANUAL = "manual"      # the owner pressed "Send reminder now"
 KIND_BILL = "bill"          # a bill PDF (new bill, or the owner pressed "Send bill")
+KIND_THANKS = "thanks"      # thank-you once a customer has paid everything
+KIND_REORDER = "reorder"    # invitation to order again, with the catalogue (marketing)
 
 # Message statuses
 QUEUED = "queued"        # waiting to go out (scheduled_for may be later), or waiting to retry

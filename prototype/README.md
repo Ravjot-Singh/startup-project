@@ -66,8 +66,13 @@ Free-tier staging (Render + Neon + cron-job.org): see [docs/deploy-staging.md](d
    The PDF is the bill exported from Busy if the owner uploaded it on the Import page (matched by the bill
    number in the file name), otherwise a one-page bill summary with a UPI QR code. Files are kept in the
    database (`app/storage.py`) because the free host's disk is wiped on restart.
-5. **Call list** shows customers 15+ days overdue for salesmen to follow up.
-6. **Payments** (`app/payments.py`): the owner records money received on the customer page and chooses which
+5. **After full payment** (`app/reminders/followups.py`): when a customer's dues reach zero they get a thank-you,
+   and, if they agreed to offers and catalogues (recorded on their page with how they agreed), an invitation to
+   order again with the catalogue PDF uploaded on Settings. It goes out around when they usually order (their
+   median gap between bills, or a fallback number of days) and is cancelled if they order first. A reply of
+   "Stop promotions" switches off only these marketing messages.
+6. **Call list** shows customers 15+ days overdue for salesmen to follow up.
+7. **Payments** (`app/payments.py`): the owner records money received on the customer page and chooses which
    bills it pays; anything left over is kept as credit and can be put against bills later. Typed payments can
    be undone. Busy uploads never lower a payment: if Busy shows more paid, the difference is added; if it
    shows less, the app keeps its own figure and marks the bill "Busy not updated yet". Bills are identified

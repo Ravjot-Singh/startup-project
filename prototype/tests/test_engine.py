@@ -273,7 +273,7 @@ def test_one_off_cancelled_when_nothing_is_owed_by_then(db):
     record_payment(db, c, Decimal(500), TODAY, allocations={inv.id: Decimal(500)})
     p = DryRunProvider()
     send_pending(db, p, day(1, 11))
-    assert p.sent == [] and msg.status == "cancelled"
+    assert msg.status == "cancelled" and [t for _, t, _ in p.sent] == ["payment_thanks"]  # thanked, not reminded
 
 
 def test_one_off_needs_a_future_time_and_a_number(db):

@@ -82,6 +82,7 @@ class TodayView:
     promises: list[MissedPromise]
     to_call: list[dict]
     to_call_count: int
+    invites_without_catalogue: int
     no_phone_count: int
     outgoing: list[OutgoingItem]
     status: SendingStatus
@@ -92,7 +93,7 @@ class TodayView:
     @property
     def needs_count(self) -> int:
         """Number of things to look at, matching the rows shown (each group of customers is one row)."""
-        return (self.replies_count + len(self.failed) + len(self.promises)
+        return (self.replies_count + len(self.failed) + len(self.promises) + (1 if self.invites_without_catalogue else 0)
                 + (1 if self.to_call_count else 0) + (1 if self.no_phone_count else 0))
 
     @property
@@ -200,6 +201,14 @@ def _missed_promises(db: Session, today: date, balances: dict[int, Decimal]) -> 
     return out
 
 
+def _invites_without_catalogue(db: Session) -> int:
+    from app.reminders.followups import current_catalogue
+
+    if current_catalogue(db) is not None:
+        return 0
+    return db.scalar(select(func.count(Message.id)).where(Message.kind == "reorder", Message.status == QUEUED)) or 0
+
+
 def buckets(invoices: list[Invoice], today: date) -> dict[str, Decimal]:
     b = {"Not due yet": Decimal(0), "1-7 days late": Decimal(0), "8-15 days late": Decimal(0),
          "16-30 days late": Decimal(0), "Over 30 days late": Decimal(0)}
@@ -255,6 +264,7 @@ def build_today(db: Session, now: datetime) -> TodayView:
         promises=_missed_promises(db, today, outstanding(db)),
         to_call=to_call[:3],
         to_call_count=len(to_call),
+        invites_without_catalogue=_invites_without_catalogue(db),
         no_phone_count=sum(1 for r in per_customer.values() if not r["customer"].phone),
         outgoing=_outgoing(db, status, now, balances),
         status=status,

@@ -99,6 +99,10 @@ def message_label(msg) -> str:
         return "Sent by you"
     if msg.kind == "one_off":
         return "Promise reminder" if msg.is_promise else "Your scheduled reminder"
+    if msg.kind == "thanks":
+        return "Thank-you"
+    if msg.kind == "reorder":
+        return "Reorder invite"
     if msg.kind == "bill":
         return f"Bill {msg.invoice.invoice_no}" if msg.invoice is not None else "Bill"
     return tone(msg.template_name)

@@ -29,6 +29,8 @@ from app.models import (
     KIND_MANUAL,
     KIND_ONE_OFF,
     KIND_REMINDER,
+    KIND_REORDER,
+    KIND_THANKS,
     OPENING,
     PAID,
     QUEUED,
@@ -47,7 +49,7 @@ from app.whatsapp.templates import BILL_TEMPLATE, render
 GRACE_DAYS = 3  # a missed step still goes out up to this many days late
 MAX_ATTEMPTS = 3
 MAX_INVOICES_IN_MESSAGE = 3
-AUTO_KINDS = (KIND_REMINDER, KIND_ONE_OFF, KIND_BILL)  # held back by "Pause all sending" and the sending hours
+AUTO_KINDS = (KIND_REMINDER, KIND_ONE_OFF, KIND_BILL, KIND_THANKS, KIND_REORDER)  # held back by "Pause all sending" and the sending hours
 BILL_SEND_DELAY = timedelta(minutes=30)  # time to upload Busy's PDFs after the outstanding report
 BILL_MAX_AGE_DAYS = 3  # only bills this recent are sent automatically (not years of history on the first upload)
 
@@ -140,8 +142,10 @@ def skip_reason(db: Session, customer: Customer, today: date, kind: str = KIND_R
         return "not opted in to WhatsApp"
     if not customer.phone:
         return "no phone number"
-    if customer.reminders_paused and kind not in (KIND_MANUAL, KIND_BILL):
+    if customer.reminders_paused and kind not in (KIND_MANUAL, KIND_BILL, KIND_THANKS):
         return "reminders paused"
+    if kind == KIND_REORDER and not customer.marketing_opt_in:
+        return "hasn't agreed to offers and catalogues"
     if kind == KIND_REMINDER:
         paid_today = db.scalar(
             select(Receipt.id).where(Receipt.customer_id == customer.id, Receipt.received_on == today, Receipt.source != OPENING).limit(1)
@@ -254,6 +258,10 @@ def send_one(db: Session, provider: WhatsAppProvider, msg: Message, now: datetim
         return "skipped"
     if msg.kind == KIND_BILL:
         return _send_bill(db, provider, msg, now)
+    if msg.kind in (KIND_THANKS, KIND_REORDER):
+        from app.reminders import followups
+
+        return followups.send(db, provider, msg, now)
     invoices = unpaid_by_customer(db, [customer.id]).get(customer.id, [])
     content = message_content(customer, invoices, today)
     if content is None:
@@ -397,6 +405,7 @@ def run_reminders(
     if now.date() != today:
         now = datetime.combine(today, now.time())
     summary = RunSummary(run_date=today)
+    _process_followups(db, now)
     ok, start, end = in_send_window(db, now)
     if enforce_window and not ok:
         summary.outside_window = True
@@ -411,11 +420,19 @@ def run_reminders(
 def send_pending(db: Session, provider: WhatsAppProvider, now: datetime) -> RunSummary:
     """Before the daily run hour: only one-off reminders and retries whose time has come."""
     summary = RunSummary(run_date=now.date())
+    _process_followups(db, now)
     ok, _, _ = in_send_window(db, now)
     if not ok:
         summary.outside_window = True
         return summary
     return send_due(db, provider, now, summary)
+
+
+def _process_followups(db: Session, now: datetime) -> None:
+    """Turn new payoffs into a thank-you and a reorder invite (app/reminders/followups.py)."""
+    from app.reminders import followups
+
+    followups.process_fully_paid(db, now)
 
 
 # ---------- the owner's own reminders ----------

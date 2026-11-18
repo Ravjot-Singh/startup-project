@@ -37,15 +37,20 @@ Hi {{1}}, thank you for your business with {{2}}. Your bill {{3}} dated {{4}} fo
 Sample values: {{1}} Sharma General Store · {{2}} ABC Frozen Foods · {{3}} INV1001 · {{4}} 18-Nov-2026 · {{5}} 8,200 ·
 {{6}} 8,200 · {{7}} 03-Dec-2026 · {{8}} upi://pay?pa=abc@okaxis&am=8200.00. Upload any PDF as the header sample.
 
+### `payment_thanks` (Utility, no header)
+Hi {{1}}, we have received your payment of Rs. {{2}}. Your account with {{3}} is now fully clear. Thank you!
+
+Sample values: {{1}} Sharma General Store · {{2}} 6,700 · {{3}} ABC Frozen Foods
+
+### `reorder_invite` (Marketing, header: **Document**, the catalogue PDF)
+Hi {{1}}, thank you for your continued business with {{2}}. Our latest catalogue is attached. Reply to this message to place your next order.
+
+Sample values: {{1}} Sharma General Store · {{2}} ABC Frozen Foods. Only sent to customers who agreed to offers
+and catalogues. Upload any PDF as the header sample.
+
 ## For the next phases (submit now so they're approved in time)
 
 These aren't used yet; the wording can still change before the phase that uses them.
-
-### `payment_thanks` (Utility, no header): Phase 5
-Hi {{1}}, we have received your payment of Rs. {{2}}. Your account with {{3}} is now fully clear. Thank you!
-
-### `reorder_invite` (Marketing, header: **Document**, the catalogue PDF): Phase 5
-Hi {{1}}, thank you for your continued business with {{2}}. Our latest catalogue is attached. Reply to this message to place your next order.
 
 ### `catalogue_promo` (Marketing, header: **Document**, the catalogue PDF): Phase 6
 Hi {{1}}, here is the latest catalogue from {{2}}. {{3}} Reply to this message to order or to ask for prices.
