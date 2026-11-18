@@ -2,22 +2,33 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f6f5f2" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#121417" media="(prefers-color-scheme: dark)">
   <title>Log in · {{ config.BUSINESS_NAME }}</title>
   <link rel="manifest" href="/static/manifest.webmanifest">
-  <link rel="icon" href="/static/icon.svg">
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_v }}">
 </head>
 <body>
-<div class="card login">
-  <h1>{{ config.BUSINESS_NAME }}</h1>
-  <p class="muted">Payment reminders</p>
-  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
-  <form method="post" action="/login">{{ csrf_input(request) }}
-    <input name="username" placeholder="Username" autocomplete="username" required>
-    <input name="password" type="password" placeholder="Password" autocomplete="current-password" required>
-    <button style="width:100%">Log in</button>
-  </form>
-</div>
+<main class="login-wrap">
+  <div class="card login">
+    <h1>{{ config.BUSINESS_NAME }}</h1>
+    <p class="muted">Payments and WhatsApp reminders</p>
+    {% if error %}<div class="alert error" role="alert">{{ error }}</div>{% endif %}
+    <form method="post" action="/login">{{ csrf_input(request) }}
+      <div class="field">
+        <label for="username">Username</label>
+        <input id="username" name="username" autocomplete="username" autocapitalize="none" required>
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+      </div>
+      <button>Log in</button>
+    </form>
+  </div>
+</main>
 </body>
 </html>

@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}Today{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Today</h1>
+    <p class="muted">{{ v.today.strftime('%A') }}, {{ v.today | when }}
+      {%- if v.last_import %}{% set w = v.last_import.created_at | when(v.today) %} · Bills updated {{ w | lower if w in ('Today', 'Yesterday') else 'on ' ~ w }}{% endif %}</p>
+  </div>
+  <a class="btn secondary" href="/import">Upload Busy report</a>
+</div>
+
+{% if not v.has_data %}
+<section class="card" aria-labelledby="welcome">
+  <h2 id="welcome">Welcome. Let's bring in your bills.</h2>
+  <p class="muted">Export the outstanding (receivables) report from Busy and upload it. The app then works out who owes what
+    and sends polite WhatsApp reminders on its own.</p>
+  <a class="btn" href="/import">Upload Busy report</a>
+</section>
+{% else %}
+
+{% if v.import_age_days is not none and v.import_age_days >= 3 %}
+<div class="alert warn">Your bills were last updated {{ v.import_age_days }} days ago. Upload a fresh Busy report so reminders quote the right amounts.</div>
+{% endif %}
+
+<section aria-label="Money at a glance" class="kpis">
+  <div class="kpi ok">
+    <div class="label">Collected, last 7 days</div>
+    <div class="value">₹{{ v.collected_7d | inr }}</div>
+    <div class="hint">Payments recorded here</div>
+  </div>
+  <div class="kpi">
+    <div class="label">Due to you</div>
+    <div class="value">₹{{ v.due_total | inr }}</div>
+    <div class="hint">{{ v.customers_due }} customer{{ 's' if v.customers_due != 1 }}</div>
+  </div>
+  <div class="kpi {{ 'danger' if v.overdue_total > 0 }}">
+    <div class="label">Overdue</div>
+    <div class="value">₹{{ v.overdue_total | inr }}</div>
+    <div class="hint">{{ v.customers_overdue }} customer{{ 's' if v.customers_overdue != 1 }}</div>
+  </div>
+</section>
+
+<section class="card section" aria-labelledby="needs">
+  <div class="card-head">
+    <h2 id="needs">Needs you</h2>
+    {% if v.needs_count %}<span class="badge warn">{{ v.needs_count }}</span>{% endif %}
+  </div>
+  {% if not v.needs_count %}
+  <p class="empty-ok"><span class="dot" aria-hidden="true"></span> All clear. Nothing needs you right now.</p>
+  {% else %}
+  <ul class="list">
+    {% for m in v.replies %}
+    <li>
+      <div class="grow">
+        <div class="title">{% if m.customer %}<a href="/customers/{{ m.customer.id }}">{{ m.customer.display_name }}</a>{% else %}+{{ m.phone }}{% endif %} replied</div>
+        <div class="muted small">“{{ m.text | truncate(120) }}” · {{ m.received_at | when(v.today) }} {{ m.received_at.strftime('%H:%M') }}</div>
+      </div>
+      <form method="post" action="/replies/{{ m.id }}/handled" class="end">{{ csrf_input(request) }}
+        <input type="hidden" name="next" value="/">
+        <button class="secondary">Done</button>
+      </form>
+    </li>
+    {% endfor %}
+    {% if v.replies_count > v.replies | length %}
+    <li><a href="/messages#replies">See all {{ v.replies_count }} replies</a></li>
+    {% endif %}
+    {% for l in v.failed %}
+    <li>
+      <div class="grow">
+        <div class="title">Message to <a href="/customers/{{ l.customer.id }}">{{ l.customer.display_name }}</a> failed</div>
+        <div class="muted small">{{ l.error or 'No reason given' }} · {{ l.run_date | when(v.today) }}</div>
+      </div>
+      <span class="badge failed end">Failed</span>
+    </li>
+    {% endfor %}
+    {% if v.to_call_count %}
+    <li>
+      <div class="grow">
+        <div class="title">{{ v.to_call_count }} customer{{ 's are' if v.to_call_count != 1 else ' is' }} 15+ days overdue. A call may help.</div>
+        <div class="muted small">
+          {% for r in v.to_call %}{{ r.customer.display_name }} (₹{{ r.total | inr }}, {{ r.max_overdue }} days){{ ', ' if not loop.last }}{% endfor %}{% if v.to_call_count > 3 %} and {{ v.to_call_count - 3 }} more{% endif %}
+        </div>
+      </div>
+      <a class="btn secondary end" href="/call-list">Call list</a>
+    </li>
+    {% endif %}
+    {% if v.no_phone_count %}
+    <li>
+      <div class="grow">
+        <div class="title">{{ v.no_phone_count }} customer{{ 's' if v.no_phone_count != 1 }} with dues {{ 'have' if v.no_phone_count != 1 else 'has' }} no WhatsApp number</div>
+        <div class="muted small">They won't get reminders until a number is added.</div>
+      </div>
+      <a class="btn secondary end" href="/customers?missing=phone">Add numbers</a>
+    </li>
+    {% endif %}
+  </ul>
+  {% endif %}
+</section>
+
+<section class="card section" aria-labelledby="outgoing">
+  <div class="card-head">
+    <h2 id="outgoing">Going out today</h2>
+    <span class="status-line small muted">
+      {% if v.status.paused %}<span class="badge paused">Paused</span>{% elif v.status.test_mode %}<span class="badge dryrun">Test mode</span>{% else %}<span class="badge ok">Automatic</span>{% endif %}
+    </span>
+  </div>
+  <p class="muted small">{{ v.status.summary }}.{% if v.status.test_mode %} Test mode: messages are recorded but not actually sent on WhatsApp.{% endif %}</p>
+  {% if v.outgoing %}
+  <ul class="list">
+    {% for o in v.outgoing %}
+    <li>
+      <div class="grow">
+        <div class="title"><a href="/customers/{{ o.plan.customer.id }}">{{ o.plan.customer.display_name }}</a></div>
+        <div class="muted small">{{ o.plan.rule.template_name | tone }} · {{ o.note }}</div>
+      </div>
+      <div class="end">
+        <div class="money">₹{{ o.plan.total | inr }}</div>
+        <span class="badge {{ {'sent':'ok','failed':'failed','skipped':'skipped','waiting':'pending','paused':'paused'}[o.state] }}">{{ {'sent':'Sent','failed':'Failed','skipped':'Not sent','waiting':'Waiting','paused':'Paused'}[o.state] }}</span>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% if not v.status.paused and v.outgoing | selectattr('state', 'equalto', 'waiting') | list %}
+  <form method="post" action="/reminders/run" class="section">{{ csrf_input(request) }}
+    <button class="secondary">Send now instead of waiting</button>
+  </form>
+  {% endif %}
+  {% else %}
+  <p class="empty">No reminders are due today.</p>
+  {% endif %}
+</section>
+
+<details class="card section">
+  <summary>More detail: how late are payments, and who owes most</summary>
+  <div class="stack">
+    <table>
+      <caption>How late payments are</caption>
+      <thead><tr><th scope="col">Lateness</th><th scope="col" class="num">Amount</th><th scope="col"><span class="sr-only">Share</span></th></tr></thead>
+      <tbody>
+      {% set maxb = (v.buckets.values() | max) or 1 %}
+      {% for label, amt in v.buckets.items() %}
+      <tr>
+        <td>{{ label }}</td>
+        <td class="num">₹{{ amt | inr }}</td>
+        <td style="width:40%"><div class="bar-track" aria-hidden="true"><div class="bar" style="width: {{ (amt / maxb * 100) | round(1) }}%"></div></div></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <table class="cards">
+      <caption>Who owes most</caption>
+      <thead><tr><th scope="col">Customer</th><th scope="col">Area</th><th scope="col" class="num">Due</th></tr></thead>
+      <tbody>
+      {% for r in v.top %}
+      <tr>
+        <td class="primary"><a href="/customers/{{ r.customer.id }}">{{ r.customer.display_name }}</a></td>
+        <td data-label="Area">{{ r.customer.area or '—' }}</td>
+        <td data-label="Due" class="num">₹{{ r.total | inr }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</details>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<div class="page-head"><h1>Settings</h1></div>
+
+<section class="card" aria-labelledby="sending">
+  <div class="card-head">
+    <h2 id="sending">Automatic sending</h2>
+    {% if status.paused %}<span class="badge paused">Paused</span>{% else %}<span class="badge ok">On</span>{% endif %}
+  </div>
+  <p>{{ status.summary }}.</p>
+  {% if status.test_mode %}<p class="muted small">Test mode: messages are recorded on the Messages page but not sent on WhatsApp until the WhatsApp account is connected.</p>{% endif %}
+  <form method="post" action="/settings/pause">{{ csrf_input(request) }}
+    {% if status.paused %}<button>Resume automatic sending</button>
+    {% else %}<button class="secondary">Pause all sending</button>{% endif %}
+  </form>
+</section>
+
+<section class="card section" aria-labelledby="schedule">
+  <div class="card-head">
+    <h2 id="schedule">Reminder schedule</h2>
+    <a href="/rules">Change</a>
+  </div>
+  <ul class="list">
+    {% for r in rules %}
+    <li>
+      <div class="grow">{{ r.offset_days | days_text }}</div>
+      <span class="muted small">{{ r.template_name | tone }}</span>
+      {% if not r.is_active %}<span class="badge skipped">Off</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+
+<section class="card section" aria-labelledby="data">
+  <h2 id="data">Your data</h2>
+  <ul class="list">
+    <li>
+      <div class="grow">
+        <div class="title">Busy reports</div>
+        <div class="muted small">{% if last_import %}Last upload {{ last_import.created_at | when(today) }} at {{ last_import.created_at.strftime('%H:%M') }}{% else %}Nothing uploaded yet{% endif %}</div>
+      </div>
+      <a class="btn secondary end" href="/import">Upload</a>
+    </li>
+  </ul>
+</section>
+
+<section class="card section" aria-labelledby="account">
+  <h2 id="account">Account</h2>
+  <p class="muted">Logged in as {{ user }}.</p>
+  <form method="post" action="/logout">{{ csrf_input(request) }}<button class="secondary">Log out</button></form>
+</section>
+{% endblock %}

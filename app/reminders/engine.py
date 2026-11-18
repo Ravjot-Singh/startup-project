@@ -83,29 +83,24 @@ def _skip_reason(db: Session, customer: Customer, today: date) -> str | None:
     return None
 
 
-def run_reminders(
-    db: Session,
-    provider: WhatsAppProvider,
-    today: date | None = None,
-    now: datetime | None = None,
-    enforce_window: bool = True,
-) -> RunSummary:
-    now = now or clock.now()
-    today = today or now.date()
-    summary = RunSummary(run_date=today)
+@dataclass
+class PlannedReminder:
+    """One customer who is due a reminder today, and what would be sent."""
 
-    start, end = settings.get_int(db, "send_window_start"), settings.get_int(db, "send_window_end")
-    if enforce_window and not (start <= now.hour < end):
-        summary.outside_window = True
-        summary.details.append(
-            f"Not sending: {now:%H:%M} is outside the {start}:00-{end}:00 window"
-        )
-        return summary
+    customer: Customer
+    rule: ReminderRule
+    invoices: list[Invoice]
+    params: list[str]
+    total: Decimal
+    skip_reason: str | None = None  # set when this customer will not be messaged (no phone, paused...)
+    existing: ReminderLog | None = None  # set when this rule already ran for the customer today
 
+
+def plan_reminders(db: Session, today: date) -> list[PlannedReminder]:
+    """Who gets which reminder today. Read-only: used by the run itself and by the Today page preview."""
     rules = {r.offset_days: r for r in db.scalars(select(ReminderRule).where(ReminderRule.is_active)).all()}
     if not rules:
-        summary.details.append("No active reminder rules")
-        return summary
+        return []
 
     unpaid = db.scalars(
         select(Invoice).options(joinedload(Invoice.customer)).where(Invoice.status.in_(UNPAID_STATUSES))
@@ -121,7 +116,8 @@ def run_reminders(
             triggered.add(inv.customer_id)
 
     offsets = sorted(rules)
-    for customer_id in triggered:
+    plan = []
+    for customer_id in sorted(triggered):
         invoices = by_customer[customer_id]
         # A bill hitting a rule today triggers the message, but its tone follows the OLDEST unpaid bill:
         # a customer with a 31-day-old bill should not get a friendly "due today" note for a new bill.
@@ -135,13 +131,41 @@ def run_reminders(
                 ReminderLog.run_date == today,
             )
         )
-        if existing:
+        params, total = build_params(customer, invoices)
+        plan.append(PlannedReminder(customer=customer, rule=rule, invoices=invoices, params=params, total=total,
+                                    skip_reason=_skip_reason(db, customer, today), existing=existing))
+    return plan
+
+
+def run_reminders(
+    db: Session,
+    provider: WhatsAppProvider,
+    today: date | None = None,
+    now: datetime | None = None,
+    enforce_window: bool = True,
+) -> RunSummary:
+    now = now or clock.now()
+    today = today or now.date()
+    summary = RunSummary(run_date=today)
+
+    start, end = settings.get_int(db, "send_window_start"), settings.get_int(db, "send_window_end")
+    if enforce_window and not (start <= now.hour < end):
+        summary.outside_window = True
+        summary.details.append(f"Not sending: {now:%H:%M} is outside the {start}:00-{end}:00 window")
+        return summary
+
+    if not db.scalar(select(ReminderRule.id).where(ReminderRule.is_active).limit(1)):
+        summary.details.append("No active reminder rules")
+        return summary
+
+    for item in plan_reminders(db, today):
+        customer, rule, invoices, params, total = item.customer, item.rule, item.invoices, item.params, item.total
+        if item.existing:
             summary.already_done += 1
             continue
 
-        params, total = build_params(customer, invoices)
         log = ReminderLog(
-            customer_id=customer_id,
+            customer_id=customer.id,
             rule_id=rule.id,
             run_date=today,
             invoice_nos=",".join(i.invoice_no for i in sorted(invoices, key=lambda i: i.due_date)),
@@ -151,12 +175,11 @@ def run_reminders(
         )
         db.add(log)
 
-        reason = _skip_reason(db, customer, today)
-        if reason:
+        if item.skip_reason:
             log.status = "skipped"
-            log.error = reason
+            log.error = item.skip_reason
             summary.skipped += 1
-            summary.details.append(f"Skipped {customer.display_name}: {reason}")
+            summary.details.append(f"Skipped {customer.display_name}: {item.skip_reason}")
             db.commit()
             continue
 

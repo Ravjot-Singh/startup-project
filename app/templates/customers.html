@@ -1,31 +1,43 @@
 {% extends "base.html" %}
 {% block title %}Customers{% endblock %}
 {% block content %}
-<h1>Customers</h1>
-<form method="get" class="row" style="margin-bottom:12px">
-  <input name="q" value="{{ q }}" placeholder="Search name, phone, area" style="flex:1; min-width:200px">
+<div class="page-head">
+  <div>
+    <h1>Customers</h1>
+    <p class="muted">{{ customers | length }} {{ 'customer' if customers | length == 1 else 'customers' }}{% if missing == 'phone' %} with dues but no WhatsApp number{% endif %}</p>
+  </div>
+  <a class="btn secondary" href="/call-list">Call list</a>
+</div>
+
+<form method="get" class="search" role="search">
+  <label for="q" class="sr-only">Search customers</label>
+  <input id="q" name="q" value="{{ q }}" placeholder="Search by name, phone or area" autocomplete="off">
+  {% if missing %}<input type="hidden" name="missing" value="{{ missing }}">{% endif %}
   <button>Search</button>
 </form>
-<div class="card table-wrap">
-  <table>
-    <tr><th>Customer</th><th>Phone</th><th>Area</th><th>Salesman</th><th>Reminders</th><th class="num">Due</th></tr>
+{% if missing == 'phone' %}<p><a href="/customers">Show all customers</a></p>{% endif %}
+
+<div class="card">
+  <table class="cards">
+    <thead><tr><th scope="col">Customer</th><th scope="col">Phone</th><th scope="col">Area</th><th scope="col">Reminders</th><th scope="col" class="num">Due</th></tr></thead>
+    <tbody>
     {% for c in customers %}
     <tr>
-      <td><a href="/customers/{{ c.id }}">{{ c.display_name }}</a>{% if c.code %} <span class="muted">{{ c.code }}</span>{% endif %}</td>
-      <td>{{ c.phone or '—' }}</td>
-      <td>{{ c.area or '' }}</td>
-      <td>{{ c.salesman or '' }}</td>
-      <td>
-        {% if not c.phone %}<span class="badge failed">no phone</span>
-        {% elif c.reminders_paused %}<span class="badge skipped">paused</span>
-        {% elif not c.whatsapp_opt_in %}<span class="badge skipped">opted out</span>
-        {% else %}<span class="badge sent">on</span>{% endif %}
+      <td class="primary"><a href="/customers/{{ c.id }}">{{ c.display_name }}</a></td>
+      <td data-label="Phone">{{ ('+' ~ c.phone) if c.phone else '—' }}</td>
+      <td data-label="Area">{{ c.area or '—' }}</td>
+      <td data-label="Reminders">
+        {% if not c.phone %}<span class="badge failed">No number</span>
+        {% elif c.reminders_paused %}<span class="badge paused">Paused</span>
+        {% elif not c.whatsapp_opt_in %}<span class="badge skipped">Opted out</span>
+        {% else %}<span class="badge ok">On</span>{% endif %}
       </td>
-      <td class="num">₹{{ balances.get(c.id, 0) | inr }}</td>
+      <td data-label="Due" class="num">{% set due = balances.get(c.id, 0) %}{% if due > 0 %}₹{{ due | inr }}{% else %}<span class="muted">Nothing due</span>{% endif %}</td>
     </tr>
     {% else %}
-    <tr><td colspan="6" class="muted">No customers yet.</td></tr>
+    <tr><td colspan="5" class="empty full">{% if q %}No customer matches “{{ q }}”.{% else %}No customers yet. They appear after you <a href="/import">upload a Busy report</a>.{% endif %}</td></tr>
     {% endfor %}
+    </tbody>
   </table>
 </div>
 {% endblock %}

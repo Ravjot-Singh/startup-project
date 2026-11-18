@@ -2,28 +2,41 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#0e7c66">
-  <title>{% block title %}Payment Reminders{% endblock %} · {{ config.BUSINESS_NAME }}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f6f5f2" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#121417" media="(prefers-color-scheme: dark)">
+  <title>{% block title %}Today{% endblock %} · {{ config.BUSINESS_NAME }}</title>
   <link rel="manifest" href="/static/manifest.webmanifest">
-  <link rel="icon" href="/static/icon.svg">
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_v }}">
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to content</a>
 {% set path = request.url.path %}
-<header>
-  <span class="brand">{{ config.BUSINESS_NAME }}</span>
-  <nav>
-    <a href="/" class="{{ 'active' if path == '/' }}">Dashboard</a>
-    <a href="/customers" class="{{ 'active' if path.startswith('/customers') }}">Customers</a>
-    <a href="/import" class="{{ 'active' if path == '/import' }}">Import</a>
-    <a href="/reminders" class="{{ 'active' if path == '/reminders' }}">Reminders</a>
-    <a href="/call-list" class="{{ 'active' if path == '/call-list' }}">Call list</a>
-    <a href="/rules" class="{{ 'active' if path == '/rules' }}">Rules</a>
-  </nav>
-  <form method="post" action="/logout" class="inline">{{ csrf_input(request) }}<button class="secondary">Log out</button></form>
+{% set section = 'today' if path == '/' else 'customers' if path.startswith('/customers') or path.startswith('/call-list')
+   else 'messages' if path.startswith('/messages') else 'settings' %}
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/">{{ config.BUSINESS_NAME }}</a>
+    <nav class="nav" aria-label="Main">
+      <a href="/" {% if section == 'today' %}aria-current="page"{% endif %}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5"/><path d="M5 10v10h14V10"/></svg>
+        <span>Today</span></a>
+      <a href="/customers" {% if section == 'customers' %}aria-current="page"{% endif %}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M16 4.8a3.5 3.5 0 0 1 0 6.4M18 14.8c1.8.7 3 2.4 3.5 5.2"/></svg>
+        <span>Customers</span></a>
+      <a href="/messages" {% if section == 'messages' %}aria-current="page"{% endif %}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg>
+        <span>Messages</span></a>
+      <a href="/settings" {% if section == 'settings' %}aria-current="page"{% endif %}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9 7 7M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>
+        <span>Settings</span></a>
+    </nav>
+  </div>
 </header>
-<main>
+<main id="main" tabindex="-1">
+{% if flash %}<div class="alert {{ flash.kind }}" role="status">{{ flash.text }}</div>{% endif %}
 {% block content %}{% endblock %}
 </main>
 </body>

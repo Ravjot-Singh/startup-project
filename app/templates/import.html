@@ -1,62 +1,77 @@
 {% extends "base.html" %}
-{% block title %}Import{% endblock %}
+{% block title %}Upload Busy report{% endblock %}
 {% block content %}
-<h1>Import from Busy / Marg</h1>
+<p class="small"><a href="/settings">← Settings</a></p>
+<div class="page-head"><h1>Upload from Busy</h1></div>
 
-{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+{% if error %}<div class="alert error" role="alert"><strong>That file couldn't be read.</strong> {{ error }}</div>{% endif %}
 {% if result %}
-<div class="alert info">
+<div class="alert {{ 'warn' if result.errors else 'ok' }}" role="status">
   {% if kind == 'customers' %}
-  Updated {{ result.batch.rows_ok }} customers{% if result.errors %}, {{ result.errors | length }} with problems{% endif %}.
+  <strong>Updated {{ result.batch.rows_ok }} customers.</strong>
   {% else %}
-  Imported {{ result.batch.rows_ok }} bills, {{ result.batch.rows_failed }} failed,
-  {{ result.batch.marked_paid }} older bills marked paid.
+  <strong>Updated {{ result.batch.rows_ok }} bills.</strong>
+  {% if result.batch.marked_paid %}{{ result.batch.marked_paid }} older bill{{ 's' if result.batch.marked_paid != 1 }} marked paid.{% endif %}
   {% endif %}
-  <div class="muted">Columns used: {% for k, v in result.column_map.items() %}{{ k }} ← “{{ v }}”{{ ', ' if not loop.last }}{% endfor %}</div>
-  {% if result.errors %}<pre>{{ result.errors[:30] | join('\n') }}</pre>{% endif %}
+  {% if result.errors %}{{ result.errors | length }} row{{ 's' if result.errors | length != 1 }} could not be read.{% endif %}
+  <details>
+    <summary class="small">Details</summary>
+    <p class="small muted">Columns used: {% for k, v in result.column_map.items() %}{{ k }} ← “{{ v }}”{{ ', ' if not loop.last }}{% endfor %}</p>
+    {% if result.errors %}<ul class="small">{% for e in result.errors[:30] %}<li>{{ e }}</li>{% endfor %}</ul>{% endif %}
+  </details>
 </div>
 {% endif %}
 {% if no_phone %}
-<div class="alert error">{{ no_phone }} customer(s) have no mobile number and won't get reminders.
-  Upload the customer list below, or add numbers on the <a href="/customers">Customers</a> page.</div>
+<div class="alert warn">{{ no_phone }} customer{{ 's' if no_phone != 1 }} have no mobile number and won't get reminders.
+  Upload the customer list below, or <a href="/customers?missing=phone">add numbers by hand</a>.</div>
 {% endif %}
 
-<h2>1. Outstanding bills (daily)</h2>
-<div class="card">
-  <p class="muted" style="margin-top:0">
-    <strong>Busy:</strong> Display → Outstanding Analysis → Bill-wise / Party-wise Receivables → choose all parties, then Export → Excel.<br>
-    <strong>Marg:</strong> Reports → Outstanding → Party-wise / Bill-wise Outstanding (Receivable) → Excel export.<br>
-    Report menu names vary by version; any bill-wise receivable report with bill no., bill date and amount/balance works.
-  </p>
-  <form method="post" action="/import" enctype="multipart/form-data" class="row">{{ csrf_input(request) }}
-    <input type="file" name="file" accept=".xls,.xlsx,.xlsm,.csv" required>
+<section class="card" aria-labelledby="bills">
+  <h2 id="bills">Outstanding bills (upload daily)</h2>
+  <details>
+    <summary class="small">Where to find this report in Busy</summary>
+    <p class="muted small">Display → Outstanding Analysis → Bill-wise Receivables → choose all parties, then Export → Excel.
+      Menu names vary a little between Busy versions; any bill-wise receivables report with bill number, bill date and
+      amount or balance works. (Marg exports work too.)</p>
+  </details>
+  <form method="post" action="/import" enctype="multipart/form-data" class="stack">{{ csrf_input(request) }}
+    <div class="field">
+      <label for="bills-file">Report file (Excel or CSV)</label>
+      <input id="bills-file" type="file" name="file" accept=".xls,.xlsx,.xlsm,.csv" required>
+    </div>
     <label class="check"><input type="checkbox" name="full_report" value="true" checked>
-      This is the full outstanding list (bills not in the file will be marked paid)</label>
+      This is the full list. Mark bills that aren't in it as paid.</label>
     <button>Upload bills</button>
   </form>
-</div>
+</section>
 
-<h2>2. Customer list with mobile numbers (once, then when parties change)</h2>
-<div class="card">
-  <p class="muted" style="margin-top:0">
-    Outstanding reports usually don't include mobile numbers. Export the party / account master
-    (Busy: Account master list for Sundry Debtors · Marg: Party/Ledger list) with columns like
-    Party Name, Mobile, Area, Salesman, Credit Days.
-  </p>
-  <form method="post" action="/import/customers" enctype="multipart/form-data" class="row">{{ csrf_input(request) }}
-    <input type="file" name="file" accept=".xls,.xlsx,.xlsm,.csv" required>
-    <button>Upload customer list</button>
+<section class="card section" aria-labelledby="custs">
+  <h2 id="custs">Customer list with mobile numbers</h2>
+  <p class="muted small">Upload once, and again when you add customers. Outstanding reports usually have no mobile numbers, so export
+    the account list for Sundry Debtors with Party Name, Mobile, Area, Salesman and Credit Days.</p>
+  <form method="post" action="/import/customers" enctype="multipart/form-data" class="stack">{{ csrf_input(request) }}
+    <div class="field">
+      <label for="cust-file">Customer list file (Excel or CSV)</label>
+      <input id="cust-file" type="file" name="file" accept=".xls,.xlsx,.xlsm,.csv" required>
+    </div>
+    <button class="secondary">Upload customer list</button>
   </form>
-</div>
+</section>
 
-<h2>Recent imports</h2>
-<div class="card table-wrap">
-  <table>
-    <tr><th>When</th><th>File</th><th class="num">OK</th><th class="num">Failed</th><th class="num">Marked paid</th></tr>
+<section class="card section" aria-labelledby="recent">
+  <h2 id="recent">Recent uploads</h2>
+  {% if batches %}
+  <ul class="list">
     {% for b in batches %}
-    <tr><td>{{ b.created_at.strftime('%d-%b-%Y %H:%M') }}</td><td>{{ b.file_name }}</td>
-      <td class="num">{{ b.rows_ok }}</td><td class="num">{{ b.rows_failed }}</td><td class="num">{{ b.marked_paid }}</td></tr>
-    {% else %}<tr><td colspan="5" class="muted">No imports yet.</td></tr>{% endfor %}
-  </table>
-</div>
+    <li>
+      <div class="grow">
+        <div class="title">{{ b.file_name }}</div>
+        <div class="muted small">{{ b.created_at | when(today) }} {{ b.created_at.strftime('%H:%M') }} · {{ b.rows_ok }} rows read{% if b.marked_paid %} · {{ b.marked_paid }} marked paid{% endif %}</div>
+      </div>
+      {% if b.rows_failed %}<span class="badge warn end">{{ b.rows_failed }} not read</span>{% else %}<span class="badge ok end">OK</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}<p class="empty">Nothing uploaded yet.</p>{% endif %}
+</section>
 {% endblock %}

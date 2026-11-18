@@ -12,7 +12,8 @@ from tests.conftest import csrf_from
 
 SAMPLE_CSV = Path(__file__).resolve().parent.parent / "sample_data" / "outstanding_sample.csv"
 
-PAGES = ["/", "/customers", "/customers?q=sharma", "/import", "/reminders", "/call-list", "/call-list?days=0", "/rules"]
+PAGES = ["/", "/customers", "/customers?q=sharma", "/customers?missing=phone", "/import", "/messages", "/call-list",
+         "/call-list?days=0", "/settings", "/rules"]
 
 
 @pytest.fixture
@@ -131,3 +132,114 @@ def test_import_rejects_wrong_file_type(logged_in):
 def test_logout(logged_in):
     assert logged_in.post("/logout", data={"csrf_token": logged_in.csrf}).status_code == 303
     assert logged_in.get("/").status_code == 303
+
+
+# ---------- Phase 1: new layout, Today page, settings ----------
+
+def test_old_reminders_url_moves_to_messages(logged_in):
+    r = logged_in.get("/reminders")
+    assert r.status_code == 301 and r.headers["location"] == "/messages"
+
+
+def test_today_empty_state_welcomes_and_points_to_upload(logged_in):
+    html = logged_in.get("/").text
+    assert "Let's bring in your bills" in html and 'href="/import"' in html
+    assert "Needs you" not in html
+
+
+def test_today_shows_important_things_first(logged_in, data):
+    html = logged_in.get("/").text
+    order = [html.index(s) for s in ("Collected, last 7 days", "Due to you", "Overdue", "Needs you", "Going out today", "More detail")]
+    assert order == sorted(order)
+    assert "₹5,000" in html  # Indian formatting, no paise for whole rupees
+    assert "Will pay Friday" in html  # unhandled reply surfaces in Needs you
+
+
+def test_today_all_clear_when_nothing_needs_attention(logged_in, db):
+    from datetime import timedelta
+
+    c = Customer(name="Fine", shop_name="Fine", phone="919800000005")
+    db.add(c)
+    db.flush()
+    db.add(Invoice(customer=c, invoice_no="F1", invoice_date=clock.today(), due_date=clock.today() + timedelta(days=10),
+                   amount=Decimal(100), amount_paid=Decimal(0), status="open"))
+    db.commit()
+    assert "All clear" in logged_in.get("/").text
+
+
+def test_nav_marks_current_section(logged_in, data):
+    for url, label in [("/", "Today"), ("/customers", "Customers"), ("/call-list", "Customers"),
+                       ("/messages", "Messages"), ("/settings", "Settings"), ("/rules", "Settings"), ("/import", "Settings")]:
+        html = logged_in.get(url).text
+        current = html.split('aria-current="page"', 1)[1][:400]
+        assert f"<span>{label}</span>" in current, url
+
+
+def test_mark_reply_done_from_today_returns_to_today(logged_in, db, data):
+    reply = db.query(InboundMessage).first()
+    r = logged_in.post(f"/replies/{reply.id}/handled", data={"next": "/", "csrf_token": logged_in.csrf})
+    assert r.headers["location"] == "/"
+
+
+def test_reply_redirect_cannot_leave_the_app(logged_in, db, data):
+    reply = db.query(InboundMessage).first()
+    for evil in ("//evil.example", "https://evil.example"):
+        r = logged_in.post(f"/replies/{reply.id}/handled", data={"next": evil, "csrf_token": logged_in.csrf})
+        assert r.headers["location"] == "/messages"
+
+
+def test_pause_and_resume_sending(logged_in, db):
+    from app import settings
+
+    logged_in.post("/settings/pause", data={"csrf_token": logged_in.csrf})
+    assert settings.get_bool(db, "sending_paused") is True
+    page = logged_in.get("/settings").text
+    assert "Nothing goes out until you resume" in page and "Resume automatic sending" in page
+    logged_in.post("/settings/pause", data={"csrf_token": logged_in.csrf})
+    assert settings.get_bool(db, "sending_paused") is False
+
+
+def test_flash_message_shows_once(logged_in, data):
+    inv = data["invoice"]
+    page = logged_in.post(f"/invoices/{inv.id}/payment", data={"amount": "1000", "csrf_token": logged_in.csrf}, follow_redirects=True)
+    assert "Payment of ₹1,000 recorded for bill INV-1" in page.text
+    assert "Payment of ₹1,000 recorded" not in logged_in.get(f"/customers/{data['customer'].id}").text
+
+
+def test_customers_missing_phone_filter(logged_in, db, data):
+    from datetime import timedelta
+
+    nophone = Customer(name="Gupta Traders", shop_name="Gupta Traders")
+    idle = Customer(name="Idle No Phone", shop_name="Idle No Phone")
+    db.add_all([nophone, idle])
+    db.flush()
+    db.add(Invoice(customer=nophone, invoice_no="G1", invoice_date=clock.today(), due_date=clock.today() + timedelta(days=5),
+                   amount=Decimal(100), amount_paid=Decimal(0), status="open"))
+    db.commit()
+    html = logged_in.get("/customers?missing=phone").text
+    assert "Gupta Traders" in html and "Idle No Phone" not in html and "Sharma Store" not in html
+
+
+def test_pwa_manifest_and_icons_served(client):
+    import json
+
+    manifest = json.loads(client.get("/static/manifest.webmanifest").text)
+    for icon in manifest["icons"]:
+        r = client.get(icon["src"])
+        assert r.status_code == 200 and r.headers["content-type"] == icon["type"], icon["src"]
+    assert {"192x192", "512x512"} <= {i["sizes"] for i in manifest["icons"]}
+    assert any(i.get("purpose") == "maskable" for i in manifest["icons"])
+
+
+def test_every_form_has_labels_for_its_inputs(logged_in, data):
+    """Every visible input/select on every page has a <label for=...> or is wrapped in a label."""
+    import re
+
+    for url in PAGES + [f"/customers/{data['customer'].id}"]:
+        html = logged_in.get(url).text
+        labelled = set(re.findall(r'<label[^>]*for="([^"]+)"', html))
+        for tag in re.findall(r"<(?:input|select)\b[^>]*>", html):
+            if 'type="hidden"' in tag or 'type="checkbox"' in tag:  # checkboxes are wrapped in their label
+                continue
+            m = re.search(r'id="([^"]+)"', tag)
+            assert m and m.group(1) in labelled, f"{url}: unlabelled field {tag}"

@@ -1,5 +1,5 @@
+import hashlib
 import secrets
-from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -9,7 +9,8 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
-from app import clock, config
+from app import clock, config, settings, ui
+from app.dashboard import build_today, sending_status
 from app.db import get_db
 from app.importers.outstanding import ImportError_, import_customers, import_outstanding, normalize_phone
 from app.models import (
@@ -27,12 +28,19 @@ from app.reminders.engine import call_list, run_reminders
 from app.security import csrf_input, csrf_protect
 from app.whatsapp.provider import get_provider
 
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 templates = Jinja2Templates(directory=Path(__file__).resolve().parent.parent / "templates")
-templates.env.filters["inr"] = lambda v: f"{Decimal(v or 0):,.2f}"
+templates.env.filters.update(
+    inr=ui.inr, when=ui.when, days_text=ui.days_text, overdue_text=ui.overdue_text, tone=ui.tone, status_label=ui.status_label
+)
 templates.env.globals["config"] = config
 templates.env.globals["csrf_input"] = csrf_input
+# Changes whenever style.css changes, so browsers fetch the new file instead of a stale cached copy.
+templates.env.globals["asset_v"] = hashlib.sha256((STATIC_DIR / "style.css").read_bytes()).hexdigest()[:10]
 
 router = APIRouter(dependencies=[Depends(csrf_protect)])
+
+PAYMENT_MODES = [("cash", "Cash"), ("upi", "UPI"), ("cheque", "Cheque"), ("bank", "Bank transfer")]
 
 
 def require_login(request: Request) -> str:
@@ -46,18 +54,36 @@ def redirect(url: str) -> RedirectResponse:
     return RedirectResponse(url, status_code=303)
 
 
+def safe_next(url: str | None, default: str) -> str:
+    """Only allow redirects back into this app (no '//evil.com' or absolute URLs)."""
+    return url if url and url.startswith("/") and not url.startswith("//") else default
+
+
+def render(request: Request, name: str, ctx: dict | None = None, status_code: int = 200):
+    base = {"today": clock.today(), "flash": request.session.pop("flash", None)}
+    return templates.TemplateResponse(request, name, base | (ctx or {}), status_code=status_code)
+
+
+def flash(request: Request, text: str, kind: str = "ok") -> None:
+    request.session["flash"] = {"text": text, "kind": kind}  # shown once on the next page
+
+
+def _404():
+    raise HTTPException(status_code=404, detail="Not found")
+
+
 # ---------- auth ----------
 
 @router.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
-    return templates.TemplateResponse(request, "login.html", {"error": None})
+    return render(request, "login.html", {"error": None})
 
 
 @router.post("/login")
 def login(request: Request, username: str = Form(...), password: str = Form(...)):
     ok = secrets.compare_digest(username, config.ADMIN_USERNAME) & secrets.compare_digest(password, config.ADMIN_PASSWORD)
     if not ok:
-        return templates.TemplateResponse(request, "login.html", {"error": "Wrong username or password"}, status_code=401)
+        return render(request, "login.html", {"error": "Wrong username or password"}, status_code=401)
     request.session["user"] = username
     return redirect("/")
 
@@ -68,63 +94,38 @@ def logout(request: Request):
     return redirect("/login")
 
 
-# ---------- dashboard ----------
-
-def _buckets(invoices: list[Invoice], today: date) -> dict[str, Decimal]:
-    b = {"Not yet due": Decimal(0), "0-7 days": Decimal(0), "8-15 days": Decimal(0), "16-30 days": Decimal(0), "30+ days": Decimal(0)}
-    for inv in invoices:
-        d = inv.days_overdue(today)
-        key = "Not yet due" if d < 0 else "0-7 days" if d <= 7 else "8-15 days" if d <= 15 else "16-30 days" if d <= 30 else "30+ days"
-        b[key] += inv.balance
-    return b
-
+# ---------- today ----------
 
 @router.get("/", response_class=HTMLResponse)
-def dashboard(request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
-    today = clock.today()
-    unpaid = db.scalars(select(Invoice).options(joinedload(Invoice.customer)).where(Invoice.status.in_(UNPAID_STATUSES))).all()
-    total = sum((i.balance for i in unpaid), Decimal(0))
-    overdue = sum((i.balance for i in unpaid if i.days_overdue(today) > 0), Decimal(0))
-    per_customer: dict[int, dict] = {}
-    for i in unpaid:
-        r = per_customer.setdefault(i.customer_id, {"customer": i.customer, "total": Decimal(0)})
-        r["total"] += i.balance
-    top = sorted(per_customer.values(), key=lambda r: -r["total"])[:10]
-    sent_today = db.scalar(select(func.count(ReminderLog.id)).where(ReminderLog.run_date == today, ReminderLog.status != "skipped"))
-    unread = db.scalar(select(func.count(InboundMessage.id)).where(InboundMessage.handled.is_(False)))
-    return templates.TemplateResponse(
-        request,
-        "dashboard.html",
-        {
-            "total": total,
-            "overdue": overdue,
-            "buckets": _buckets(unpaid, today),
-            "top": top,
-            "customers_due": len(per_customer),
-            "sent_today": sent_today,
-            "unread": unread,
-            "summary": request.session.pop("last_run", None),
-        },
-    )
+def today_page(request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
+    return render(request, "today.html", {"v": build_today(db, clock.now())})
 
 
 @router.post("/reminders/run")
 def run_now(request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
     s = run_reminders(db, get_provider())
-    request.session["last_run"] = {
-        "sent": s.sent, "failed": s.failed, "skipped": s.skipped, "already_done": s.already_done, "details": s.details[:15],  # session is a cookie; keep it small
-    }
+    if s.outside_window:
+        flash(request, "Nothing sent: it's outside your sending hours. Reminders go out automatically tomorrow.", "warn")
+    elif s.sent or s.failed:
+        text = f"Sent {s.sent} reminder{'s' if s.sent != 1 else ''}."
+        if s.failed:
+            text += f" {s.failed} failed; see Needs you."
+        flash(request, text, "warn" if s.failed else "ok")
+    else:
+        flash(request, "Nothing new to send right now. Everyone due today has already been reminded.", "ok")
     return redirect("/")
 
 
 # ---------- customers ----------
 
 @router.get("/customers", response_class=HTMLResponse)
-def customers(request: Request, q: str = "", db: Session = Depends(get_db), user: str = Depends(require_login)):
+def customers(request: Request, q: str = "", missing: str = "", db: Session = Depends(get_db), user: str = Depends(require_login)):
     stmt = select(Customer).order_by(Customer.name)
     if q:
         like = f"%{q}%"
         stmt = stmt.where(or_(Customer.name.ilike(like), Customer.shop_name.ilike(like), Customer.phone.ilike(like), Customer.area.ilike(like)))
+    if missing == "phone":
+        stmt = stmt.where(Customer.phone.is_(None))
     rows = db.scalars(stmt).all()
     balances = dict(
         db.execute(
@@ -133,7 +134,9 @@ def customers(request: Request, q: str = "", db: Session = Depends(get_db), user
             .group_by(Invoice.customer_id)
         ).all()
     )
-    return templates.TemplateResponse(request, "customers.html", {"customers": rows, "balances": balances, "q": q})
+    if missing == "phone":
+        rows = [c for c in rows if balances.get(c.id, 0) > 0]
+    return render(request, "customers.html", {"customers": rows, "balances": balances, "q": q, "missing": missing})
 
 
 @router.get("/customers/{cid}", response_class=HTMLResponse)
@@ -142,16 +145,20 @@ def customer_detail(cid: int, request: Request, db: Session = Depends(get_db), u
     invoices = db.scalars(select(Invoice).where(Invoice.customer_id == cid).order_by(Invoice.due_date.desc())).all()
     logs = db.scalars(select(ReminderLog).where(ReminderLog.customer_id == cid).order_by(ReminderLog.id.desc()).limit(20)).all()
     replies = db.scalars(select(InboundMessage).where(InboundMessage.customer_id == cid).order_by(InboundMessage.id.desc()).limit(20)).all()
-    return templates.TemplateResponse(
-        request,
-        "customer_detail.html",
-        {"c": c, "invoices": invoices, "logs": logs, "replies": replies, "today": clock.today(), "error": request.query_params.get("error")},
-    )
+    today = clock.today()
+    unpaid = [i for i in invoices if i.status in UNPAID_STATUSES and i.balance > 0]
+    return render(request, "customer_detail.html", {
+        "c": c, "invoices": invoices, "logs": logs, "replies": replies, "modes": PAYMENT_MODES,
+        "due": sum((i.balance for i in unpaid), Decimal(0)),
+        "overdue": sum((i.balance for i in unpaid if i.days_overdue(today) > 0), Decimal(0)),
+        "error": request.query_params.get("error"),
+    })
 
 
 @router.post("/customers/{cid}/edit")
 def customer_edit(
     cid: int,
+    request: Request,
     phone: str = Form(""),
     credit_days: int = Form(15),
     area: str = Form(""),
@@ -165,19 +172,21 @@ def customer_edit(
     if phone.strip():
         normalized = normalize_phone(phone)
         if not normalized:
-            return redirect(f"/customers/{cid}?error=Invalid+phone+number")
+            return redirect(f"/customers/{cid}?error=That+doesn%27t+look+like+a+mobile+number")
         c.phone = normalized
     else:
         c.phone = None
     c.credit_days, c.area, c.salesman = credit_days, area or None, salesman or None
     c.whatsapp_opt_in, c.reminders_paused = whatsapp_opt_in, reminders_paused
     db.commit()
+    flash(request, "Saved.")
     return redirect(f"/customers/{cid}")
 
 
 @router.post("/invoices/{iid}/payment")
 def record_payment(
     iid: int,
+    request: Request,
     amount: str = Form(...),
     mode: str = Form("cash"),
     note: str = Form(""),
@@ -186,39 +195,110 @@ def record_payment(
 ):
     inv = db.get(Invoice, iid) or _404()
     try:
-        amt = Decimal(amount.replace(",", "")).quantize(Decimal("0.01"))
+        amt = Decimal(amount.replace(",", "").replace("₹", "").strip()).quantize(Decimal("0.01"))
     except InvalidOperation:
         amt = Decimal(0)
     if amt <= 0:
-        return redirect(f"/customers/{inv.customer_id}?error=Enter+a+valid+amount")
+        return redirect(f"/customers/{inv.customer_id}?error=Enter+an+amount+greater+than+zero")
     db.add(Payment(invoice=inv, amount=amt, paid_on=clock.today(), mode=mode, note=note or None))
     inv.amount_paid = Decimal(inv.amount_paid or 0) + amt
     inv.refresh_status()
     db.commit()
+    flash(request, f"Payment of ₹{ui.inr(amt)} recorded for bill {inv.invoice_no}.")
     return redirect(f"/customers/{inv.customer_id}")
 
 
 @router.post("/invoices/{iid}/dispute")
-def toggle_dispute(iid: int, db: Session = Depends(get_db), user: str = Depends(require_login)):
+def toggle_dispute(iid: int, request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
     inv = db.get(Invoice, iid) or _404()
     if inv.status == DISPUTED:
         inv.status = "open"
         inv.refresh_status()
+        flash(request, f"Bill {inv.invoice_no} is no longer disputed. Reminders include it again.")
     else:
         inv.status = DISPUTED
+        flash(request, f"Bill {inv.invoice_no} marked disputed. It's left out of reminders.")
     db.commit()
     return redirect(f"/customers/{inv.customer_id}")
 
 
+@router.get("/call-list", response_class=HTMLResponse)
+def call_list_page(request: Request, days: int = 15, area: str = "", db: Session = Depends(get_db), user: str = Depends(require_login)):
+    rows = call_list(db, today=clock.today(), min_days_overdue=days)
+    if area:
+        rows = [r for r in rows if (r["customer"].area or "").lower() == area.lower()]
+    areas = sorted({a for (a,) in db.execute(select(Customer.area).where(Customer.area.is_not(None)).distinct())})
+    return render(request, "call_list.html", {"rows": rows, "days": days, "area": area, "areas": areas})
+
+
+# ---------- messages ----------
+
+@router.get("/messages", response_class=HTMLResponse)
+def messages(request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
+    logs = db.scalars(
+        select(ReminderLog).options(joinedload(ReminderLog.customer), joinedload(ReminderLog.rule)).order_by(ReminderLog.id.desc()).limit(200)
+    ).all()
+    replies = db.scalars(select(InboundMessage).options(joinedload(InboundMessage.customer)).order_by(InboundMessage.id.desc()).limit(50)).all()
+    return render(request, "messages.html", {"logs": logs, "replies": replies, "status": sending_status(db)})
+
+
+@router.get("/reminders")
+def reminders_moved():
+    return RedirectResponse("/messages", status_code=301)
+
+
+@router.post("/replies/{mid}/handled")
+def reply_handled(mid: int, request: Request, next: str = Form(""), db: Session = Depends(get_db), user: str = Depends(require_login)):
+    m = db.get(InboundMessage, mid) or _404()
+    m.handled = True
+    db.commit()
+    return redirect(safe_next(next, "/messages"))
+
+
+# ---------- settings ----------
+
+@router.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
+    rules = db.scalars(select(ReminderRule).order_by(ReminderRule.offset_days)).all()
+    last_import = db.scalar(select(ImportBatch).order_by(ImportBatch.id.desc()).limit(1))
+    return render(request, "settings.html", {"status": sending_status(db), "rules": rules, "last_import": last_import, "user": user})
+
+
+@router.post("/settings/pause")
+def toggle_pause(request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
+    paused = not settings.get_bool(db, "sending_paused")
+    settings.set_value(db, "sending_paused", paused)
+    flash(request, "Automatic sending paused. Nothing goes out until you resume." if paused
+          else "Automatic sending resumed.", "warn" if paused else "ok")
+    return redirect("/settings")
+
+
+@router.get("/rules", response_class=HTMLResponse)
+def rules(request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
+    rows = db.scalars(select(ReminderRule).order_by(ReminderRule.offset_days)).all()
+    return render(request, "rules.html", {"rules": rows})
+
+
+@router.post("/rules/{rid}/toggle")
+def toggle_rule(rid: int, db: Session = Depends(get_db), user: str = Depends(require_login)):
+    r = db.get(ReminderRule, rid) or _404()
+    r.is_active = not r.is_active
+    db.commit()
+    return redirect("/rules")
+
+
 # ---------- import ----------
+
+def _import_ctx(db: Session) -> dict:
+    return {
+        "batches": db.scalars(select(ImportBatch).order_by(ImportBatch.id.desc()).limit(10)).all(),
+        "no_phone": db.scalar(select(func.count(Customer.id)).where(Customer.phone.is_(None), Customer.is_active)),
+    }
+
 
 @router.get("/import", response_class=HTMLResponse)
 def import_page(request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
-    batches = db.scalars(select(ImportBatch).order_by(ImportBatch.id.desc()).limit(20)).all()
-    no_phone = db.scalar(select(func.count(Customer.id)).where(Customer.phone.is_(None), Customer.is_active))
-    return templates.TemplateResponse(
-        request, "import.html", {"batches": batches, "result": None, "error": None, "kind": None, "no_phone": no_phone}
-    )
+    return render(request, "import.html", _import_ctx(db) | {"result": None, "error": None, "kind": None})
 
 
 ALLOWED_EXTENSIONS = (".csv", ".xlsx", ".xlsm", ".xls")
@@ -234,11 +314,7 @@ async def _run_import(request: Request, db: Session, file: UploadFile, fn, kind:
         except ImportError_ as e:
             db.rollback()
             error = str(e)
-    batches = db.scalars(select(ImportBatch).order_by(ImportBatch.id.desc()).limit(20)).all()
-    no_phone = db.scalar(select(func.count(Customer.id)).where(Customer.phone.is_(None), Customer.is_active))
-    return templates.TemplateResponse(
-        request, "import.html", {"batches": batches, "result": result, "error": error, "kind": kind, "no_phone": no_phone}
-    )
+    return render(request, "import.html", _import_ctx(db) | {"result": result, "error": error, "kind": kind})
 
 
 @router.post("/import", response_class=HTMLResponse)
@@ -257,49 +333,3 @@ async def import_customers_upload(
     request: Request, file: UploadFile = File(...), db: Session = Depends(get_db), user: str = Depends(require_login)
 ):
     return await _run_import(request, db, file, import_customers, "customers")
-
-
-# ---------- reminders, replies, call list, rules ----------
-
-@router.get("/reminders", response_class=HTMLResponse)
-def reminders(request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
-    logs = db.scalars(
-        select(ReminderLog).options(joinedload(ReminderLog.customer), joinedload(ReminderLog.rule)).order_by(ReminderLog.id.desc()).limit(200)
-    ).all()
-    replies = db.scalars(select(InboundMessage).options(joinedload(InboundMessage.customer)).order_by(InboundMessage.id.desc()).limit(50)).all()
-    return templates.TemplateResponse(request, "reminders.html", {"logs": logs, "replies": replies})
-
-
-@router.post("/replies/{mid}/handled")
-def reply_handled(mid: int, db: Session = Depends(get_db), user: str = Depends(require_login)):
-    m = db.get(InboundMessage, mid) or _404()
-    m.handled = True
-    db.commit()
-    return redirect("/reminders")
-
-
-@router.get("/call-list", response_class=HTMLResponse)
-def call_list_page(request: Request, days: int = 15, area: str = "", db: Session = Depends(get_db), user: str = Depends(require_login)):
-    rows = call_list(db, min_days_overdue=days)
-    if area:
-        rows = [r for r in rows if (r["customer"].area or "").lower() == area.lower()]
-    areas = sorted({a for (a,) in db.execute(select(Customer.area).where(Customer.area.is_not(None)).distinct())})
-    return templates.TemplateResponse(request, "call_list.html", {"rows": rows, "days": days, "area": area, "areas": areas})
-
-
-@router.get("/rules", response_class=HTMLResponse)
-def rules(request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
-    rows = db.scalars(select(ReminderRule).order_by(ReminderRule.offset_days)).all()
-    return templates.TemplateResponse(request, "rules.html", {"rules": rows})
-
-
-@router.post("/rules/{rid}/toggle")
-def toggle_rule(rid: int, db: Session = Depends(get_db), user: str = Depends(require_login)):
-    r = db.get(ReminderRule, rid) or _404()
-    r.is_active = not r.is_active
-    db.commit()
-    return redirect("/rules")
-
-
-def _404():
-    raise HTTPException(status_code=404, detail="Not found")

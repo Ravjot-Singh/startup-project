@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Messages{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Messages</h1>
+    <p class="muted">{{ status.summary }}.{% if status.test_mode %} Test mode: messages are recorded, not sent.{% endif %}</p>
+  </div>
+</div>
+
+<section class="card" aria-labelledby="replies">
+  <h2 id="replies">Replies from customers</h2>
+  {% if replies %}
+  <ul class="list">
+    {% for m in replies %}
+    <li>
+      <div class="grow">
+        <div class="title">{% if m.customer %}<a href="/customers/{{ m.customer.id }}">{{ m.customer.display_name }}</a>{% else %}+{{ m.phone }}{% endif %}</div>
+        <div class="small">“{{ m.text }}”</div>
+        <div class="muted small">{{ m.received_at | when(today) }} {{ m.received_at.strftime('%H:%M') }}</div>
+      </div>
+      {% if not m.handled %}
+      <form method="post" action="/replies/{{ m.id }}/handled" class="end">{{ csrf_input(request) }}<button class="secondary">Done</button></form>
+      {% else %}<span class="muted small end">Done</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}<p class="empty">No replies yet.</p>{% endif %}
+</section>
+
+<section class="card section" aria-labelledby="sentlog">
+  <h2 id="sentlog">Sent reminders</h2>
+  {% if logs %}
+  <ul class="list">
+    {% for l in logs %}
+    <li>
+      <div class="grow">
+        <div class="title"><a href="/customers/{{ l.customer.id }}">{{ l.customer.display_name }}</a></div>
+        <details>
+          <summary class="small">{{ l.run_date | when(today) }} · {{ l.rule.template_name | tone }} · ₹{{ l.amount_due | inr }}</summary>
+          <div class="message-text">{{ l.message_preview }}</div>
+        </details>
+        {% if l.error %}<div class="muted small">{{ l.error }}</div>{% endif %}
+      </div>
+      <span class="badge {{ l.status }} end">{{ l.status | status_label }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}<p class="empty">No reminders sent yet.</p>{% endif %}
+</section>
+{% endblock %}

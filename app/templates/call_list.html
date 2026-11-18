@@ -1,31 +1,41 @@
 {% extends "base.html" %}
 {% block title %}Call list{% endblock %}
 {% block content %}
-<h1>Call list</h1>
-<p class="muted">Customers to follow up by phone or visit. Hand this to salesmen.</p>
-<form method="get" class="row" style="margin-bottom:12px">
-  <label>Overdue at least (days)<input type="number" name="days" value="{{ days }}" style="width:90px"></label>
-  <label>Area
-    <select name="area"><option value="">All</option>
+<p class="small"><a href="/customers">← Customers</a></p>
+<div class="page-head">
+  <div>
+    <h1>Call list</h1>
+    <p class="muted">Customers who are late even after reminders. A call or visit may help.</p>
+  </div>
+</div>
+<form method="get" class="card form-grid" aria-label="Filter call list">
+  <div class="field">
+    <label for="days">Late by at least (days)</label>
+    <input id="days" type="number" name="days" min="0" value="{{ days }}">
+  </div>
+  <div class="field">
+    <label for="area">Area</label>
+    <select id="area" name="area"><option value="">All areas</option>
       {% for a in areas %}<option {{ 'selected' if a == area }}>{{ a }}</option>{% endfor %}
     </select>
-  </label>
-  <button>Filter</button>
+  </div>
+  <div class="field"><button class="secondary">Show</button></div>
 </form>
-<div class="card table-wrap">
-  <table>
-    <tr><th>Customer</th><th>Phone</th><th>Area</th><th>Salesman</th><th class="num">Bills</th><th class="num">Oldest overdue</th><th class="num">Due</th></tr>
+
+<div class="card section">
+  <table class="cards">
+    <thead><tr><th scope="col">Customer</th><th scope="col">Phone</th><th scope="col">Area</th><th scope="col" class="num">Late by</th><th scope="col" class="num">Due</th></tr></thead>
+    <tbody>
     {% for r in rows %}
     <tr>
-      <td><a href="/customers/{{ r.customer.id }}">{{ r.customer.display_name }}</a></td>
-      <td>{% if r.customer.phone %}<a href="tel:+{{ r.customer.phone }}">+{{ r.customer.phone }}</a>{% else %}—{% endif %}</td>
-      <td>{{ r.customer.area or '' }}</td>
-      <td>{{ r.customer.salesman or '' }}</td>
-      <td class="num">{{ r.count }}</td>
-      <td class="num overdue">{{ r.max_overdue }} days</td>
-      <td class="num">₹{{ r.total | inr }}</td>
+      <td class="primary"><a href="/customers/{{ r.customer.id }}">{{ r.customer.display_name }}</a></td>
+      <td data-label="Phone">{% if r.customer.phone %}<a href="tel:+{{ r.customer.phone }}">Call +{{ r.customer.phone }}</a>{% else %}—{% endif %}</td>
+      <td data-label="Area">{{ r.customer.area or '—' }}{% if r.customer.salesman %} · {{ r.customer.salesman }}{% endif %}</td>
+      <td data-label="Late by" class="num overdue">{{ r.max_overdue }} days</td>
+      <td data-label="Due" class="num">₹{{ r.total | inr }} <span class="muted small">({{ r.count }} bill{{ 's' if r.count != 1 }})</span></td>
     </tr>
-    {% else %}<tr><td colspan="7" class="muted">Nobody is that far overdue.</td></tr>{% endfor %}
+    {% else %}<tr><td colspan="5" class="empty full">Nobody is that late. Nice.</td></tr>{% endfor %}
+    </tbody>
   </table>
 </div>
 {% endblock %}

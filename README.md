@@ -19,6 +19,10 @@ Open http://localhost:8000 and log in with `ADMIN_USERNAME` / `ADMIN_PASSWORD` f
 Run the tests with `pytest` (in-memory SQLite). To run them against Postgres, set `TEST_DATABASE_URL`
 to an empty throw-away database. CI (`.github/workflows/ci.yml`) runs both on every push.
 
+The accessibility test (`tests/test_a11y.py`) checks every page with axe-core in headless Chromium, at phone and
+desktop size, in light and dark mode. It needs the dev tools and is skipped without them:
+`pip install -r requirements-dev.txt` then `python -m playwright install chromium`.
+
 The database schema is managed by Alembic (`migrations/`) and is upgraded automatically on start. After
 changing `app/models.py`, create a migration with `alembic revision --autogenerate -m "what changed"`.
 

@@ -1,71 +1,132 @@
 {% extends "base.html" %}
 {% block title %}{{ c.display_name }}{% endblock %}
 {% block content %}
-<h1>{{ c.display_name }}</h1>
-{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
-
-<div class="card">
-  <form method="post" action="/customers/{{ c.id }}/edit" class="row">{{ csrf_input(request) }}
-    <label>WhatsApp number<input name="phone" value="{{ c.phone or '' }}" placeholder="9876543210"></label>
-    <label>Credit days<input name="credit_days" type="number" min="0" value="{{ c.credit_days }}" style="width:90px"></label>
-    <label>Area<input name="area" value="{{ c.area or '' }}"></label>
-    <label>Salesman<input name="salesman" value="{{ c.salesman or '' }}"></label>
-    <label class="check"><input type="checkbox" name="whatsapp_opt_in" value="true" {{ 'checked' if c.whatsapp_opt_in }}> WhatsApp opt-in</label>
-    <label class="check"><input type="checkbox" name="reminders_paused" value="true" {{ 'checked' if c.reminders_paused }}> Pause reminders</label>
-    <button>Save</button>
-  </form>
+<p class="small"><a href="/customers">← All customers</a></p>
+<div class="page-head">
+  <div>
+    <h1>{{ c.display_name }}</h1>
+    <p class="muted">
+      {% if c.phone %}<a href="tel:+{{ c.phone }}">+{{ c.phone }}</a> · <a href="https://wa.me/{{ c.phone }}" target="_blank" rel="noopener">Open WhatsApp</a>{% else %}No WhatsApp number{% endif %}
+      {% if c.area %} · {{ c.area }}{% endif %}{% if c.salesman %} · Salesman: {{ c.salesman }}{% endif %}
+    </p>
+  </div>
+  <div>
+    {% if not c.phone %}<span class="badge failed">No number</span>
+    {% elif c.reminders_paused %}<span class="badge paused">Reminders paused</span>
+    {% elif not c.whatsapp_opt_in %}<span class="badge skipped">Opted out</span>
+    {% else %}<span class="badge ok">Reminders on</span>{% endif %}
+  </div>
 </div>
+{% if error %}<div class="alert error" role="alert">{{ error }}</div>{% endif %}
 
-<h2>Invoices</h2>
-<div class="card table-wrap">
-  <table>
-    <tr><th>Invoice</th><th>Date</th><th>Due</th><th class="num">Amount</th><th class="num">Balance</th><th>Status</th><th>Actions</th></tr>
+<section class="kpis" aria-label="Balance">
+  <div class="kpi"><div class="label">Due</div><div class="value">₹{{ due | inr }}</div></div>
+  <div class="kpi {{ 'danger' if overdue > 0 }}"><div class="label">Overdue</div><div class="value">₹{{ overdue | inr }}</div></div>
+  <div class="kpi"><div class="label">Credit days</div><div class="value">{{ c.credit_days }}</div></div>
+</section>
+
+<section class="card section" aria-labelledby="bills">
+  <h2 id="bills">Bills</h2>
+  {% if invoices %}
+  <ul class="list">
     {% for inv in invoices %}
     {% set od = inv.days_overdue(today) %}
-    <tr>
-      <td>{{ inv.invoice_no }}</td>
-      <td>{{ inv.invoice_date.strftime('%d-%b-%Y') }}</td>
-      <td>{{ inv.due_date.strftime('%d-%b-%Y') }}
-        {% if inv.status in ('open','partial') and od > 0 %}<div class="overdue">{{ od }} days overdue</div>{% endif %}</td>
-      <td class="num">₹{{ inv.amount | inr }}</td>
-      <td class="num">₹{{ inv.balance | inr }}</td>
-      <td><span class="badge {{ inv.status }}">{{ inv.status }}</span></td>
-      <td>
-        {% if inv.status in ('open','partial') %}
-        <form method="post" action="/invoices/{{ inv.id }}/payment" class="row">{{ csrf_input(request) }}
-          <input name="amount" placeholder="Amount" value="{{ inv.balance }}" style="width:110px" required>
-          <select name="mode"><option>cash</option><option>upi</option><option>cheque</option><option>bank</option></select>
-          <button>Record payment</button>
-        </form>
-        {% endif %}
-        {% if inv.status != 'paid' %}
-        <form method="post" action="/invoices/{{ inv.id }}/dispute" class="inline">{{ csrf_input(request) }}
-          <button class="secondary">{{ 'Clear dispute' if inv.status == 'disputed' else 'Mark disputed' }}</button>
-        </form>
-        {% endif %}
-      </td>
-    </tr>
+    {% set unpaid = inv.status in ('open', 'partial') %}
+    <li style="flex-wrap: wrap">
+      <div class="grow">
+        <div class="title">Bill {{ inv.invoice_no }}</div>
+        <div class="muted small">
+          {{ inv.invoice_date | when(today) }} · ₹{{ inv.amount | inr }}
+          {% if unpaid %} · <span class="{{ 'overdue' if od > 0 }}">{{ od | overdue_text }}</span>{% endif %}
+        </div>
+      </div>
+      <div class="end">
+        {% if unpaid %}<div class="money">₹{{ inv.balance | inr }} left</div>{% endif %}
+        <span class="badge {{ inv.status }}">{{ inv.status | status_label }}</span>
+      </div>
+      {% if inv.status != 'paid' %}
+      <div style="flex-basis: 100%">
+        <details>
+          <summary>{{ 'Record payment or dispute' if unpaid else 'Dispute' }}</summary>
+          {% if unpaid %}
+          <form method="post" action="/invoices/{{ inv.id }}/payment" class="form-grid">{{ csrf_input(request) }}
+            <div class="field">
+              <label for="amt-{{ inv.id }}">Amount received (₹)</label>
+              <input id="amt-{{ inv.id }}" name="amount" inputmode="decimal" value="{{ inv.balance }}" required>
+            </div>
+            <div class="field">
+              <label for="mode-{{ inv.id }}">Paid by</label>
+              <select id="mode-{{ inv.id }}" name="mode">{% for v, label in modes %}<option value="{{ v }}">{{ label }}</option>{% endfor %}</select>
+            </div>
+            <div class="field"><button>Save payment</button></div>
+          </form>
+          {% endif %}
+          <form method="post" action="/invoices/{{ inv.id }}/dispute" class="section">{{ csrf_input(request) }}
+            <button class="secondary">{{ 'Clear dispute' if inv.status == 'disputed' else 'Mark as disputed (stop reminders for this bill)' }}</button>
+          </form>
+        </details>
+      </div>
+      {% endif %}
+    </li>
     {% endfor %}
-  </table>
-</div>
+  </ul>
+  {% else %}
+  <p class="empty">No bills for this customer.</p>
+  {% endif %}
+</section>
 
-<h2>Reminders sent</h2>
-<div class="card table-wrap">
-  <table>
-    <tr><th>Date</th><th>Message</th><th>Status</th></tr>
+<details class="card section" {{ 'open' if error }}>
+  <summary>Contact and reminder settings</summary>
+  <form method="post" action="/customers/{{ c.id }}/edit" class="form-grid">{{ csrf_input(request) }}
+    <div class="field">
+      <label for="phone">WhatsApp number</label>
+      <input id="phone" name="phone" value="{{ c.phone or '' }}" inputmode="tel" placeholder="98765 43210">
+    </div>
+    <div class="field">
+      <label for="credit_days">Credit days</label>
+      <input id="credit_days" name="credit_days" type="number" min="0" value="{{ c.credit_days }}">
+    </div>
+    <div class="field">
+      <label for="area">Area</label>
+      <input id="area" name="area" value="{{ c.area or '' }}">
+    </div>
+    <div class="field">
+      <label for="salesman">Salesman</label>
+      <input id="salesman" name="salesman" value="{{ c.salesman or '' }}">
+    </div>
+    <label class="check"><input type="checkbox" name="whatsapp_opt_in" value="true" {{ 'checked' if c.whatsapp_opt_in }}> Agreed to WhatsApp messages</label>
+    <label class="check"><input type="checkbox" name="reminders_paused" value="true" {{ 'checked' if c.reminders_paused }}> Pause reminders</label>
+    <div class="field"><button>Save</button></div>
+  </form>
+</details>
+
+<section class="card section" aria-labelledby="sent">
+  <h2 id="sent">Messages</h2>
+  {% if logs or replies %}
+  <ul class="list">
+    {% for m in replies %}
+    <li>
+      <div class="grow">
+        <div class="title">They replied</div>
+        <div class="muted small">“{{ m.text }}” · {{ m.received_at | when(today) }} {{ m.received_at.strftime('%H:%M') }}</div>
+      </div>
+    </li>
+    {% endfor %}
     {% for l in logs %}
-    <tr><td>{{ l.run_date.strftime('%d-%b-%Y') }}</td><td>{{ l.message_preview }}</td>
-      <td><span class="badge {{ l.status }}">{{ l.status }}</span>{% if l.error %}<div class="muted">{{ l.error }}</div>{% endif %}</td></tr>
-    {% else %}<tr><td colspan="3" class="muted">None yet.</td></tr>{% endfor %}
-  </table>
-</div>
-
-{% if replies %}
-<h2>Replies from customer</h2>
-<div class="card table-wrap">
-  <table>
-    {% for m in replies %}<tr><td>{{ m.received_at.strftime('%d-%b %H:%M') }}</td><td>{{ m.text }}</td></tr>{% endfor %}
-  </table>
-</div>
-{% endif %}
+    <li>
+      <div class="grow">
+        <details>
+          <summary>{{ l.run_date | when(today) }}: ₹{{ l.amount_due | inr }} reminder</summary>
+          <div class="message-text">{{ l.message_preview }}</div>
+          {% if l.error %}<p class="muted small">{{ l.error }}</p>{% endif %}
+        </details>
+      </div>
+      <span class="badge {{ l.status }} end">{{ l.status | status_label }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty">No messages yet.</p>
+  {% endif %}
+</section>
 {% endblock %}
