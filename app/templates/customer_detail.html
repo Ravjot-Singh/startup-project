@@ -5,7 +5,7 @@
 {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
 
 <div class="card">
-  <form method="post" action="/customers/{{ c.id }}/edit" class="row">
+  <form method="post" action="/customers/{{ c.id }}/edit" class="row">{{ csrf_input(request) }}
     <label>WhatsApp number<input name="phone" value="{{ c.phone or '' }}" placeholder="9876543210"></label>
     <label>Credit days<input name="credit_days" type="number" min="0" value="{{ c.credit_days }}" style="width:90px"></label>
     <label>Area<input name="area" value="{{ c.area or '' }}"></label>
@@ -32,14 +32,14 @@
       <td><span class="badge {{ inv.status }}">{{ inv.status }}</span></td>
       <td>
         {% if inv.status in ('open','partial') %}
-        <form method="post" action="/invoices/{{ inv.id }}/payment" class="row">
+        <form method="post" action="/invoices/{{ inv.id }}/payment" class="row">{{ csrf_input(request) }}
           <input name="amount" placeholder="Amount" value="{{ inv.balance }}" style="width:110px" required>
           <select name="mode"><option>cash</option><option>upi</option><option>cheque</option><option>bank</option></select>
           <button>Record payment</button>
         </form>
         {% endif %}
         {% if inv.status != 'paid' %}
-        <form method="post" action="/invoices/{{ inv.id }}/dispute" class="inline">
+        <form method="post" action="/invoices/{{ inv.id }}/dispute" class="inline">{{ csrf_input(request) }}
           <button class="secondary">{{ 'Clear dispute' if inv.status == 'disputed' else 'Mark disputed' }}</button>
         </form>
         {% endif %}

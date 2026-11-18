@@ -14,6 +14,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.clock import now as _now
 from app.db import Base
 
 # Invoice statuses
@@ -138,7 +139,7 @@ class InboundMessage(Base):
     customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"))
     phone: Mapped[str] = mapped_column(String(20))
     text: Mapped[str] = mapped_column(Text)
-    received_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     handled: Mapped[bool] = mapped_column(Boolean, default=False)
 
     customer: Mapped[Customer | None] = relationship()
@@ -153,4 +154,14 @@ class ImportBatch(Base):
     rows_failed: Mapped[int] = mapped_column(Integer, default=0)
     marked_paid: Mapped[int] = mapped_column(Integer, default=0)
     errors: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
+class AppSetting(Base):
+    """Owner-editable settings (send time, window, pause...). Read through app.settings, not directly."""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)

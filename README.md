@@ -16,7 +16,13 @@ uvicorn app.main:app --reload
 
 Open http://localhost:8000 and log in with `ADMIN_USERNAME` / `ADMIN_PASSWORD` from `.env`.
 
-Run the tests with `pytest`.
+Run the tests with `pytest` (in-memory SQLite). To run them against Postgres, set `TEST_DATABASE_URL`
+to an empty throw-away database. CI (`.github/workflows/ci.yml`) runs both on every push.
+
+The database schema is managed by Alembic (`migrations/`) and is upgraded automatically on start. After
+changing `app/models.py`, create a migration with `alembic revision --autogenerate -m "what changed"`.
+
+Free-tier staging (Render + Neon + cron-job.org): see [docs/deploy-staging.md](docs/deploy-staging.md).
 
 ## How it works
 
@@ -34,7 +40,9 @@ Run the tests with `pytest`.
    - The Busy/Marg layouts are covered by tests built from typical report shapes
      (`tests/test_import_busy_marg.py`), **not yet from real exports**. Test with the distributor's actual
      files before going live.
-2. **Daily run** at `REMINDER_RUN_HOUR` (default 10:00): for each customer, if any unpaid bill is exactly
+2. **Automatic runs** happen on every *tick*: `POST /jobs/tick`, called every 10 min by an external cron
+   on the free host, or by the built-in timer locally (`LOCAL_SCHEDULER`). From the run hour onwards
+   (default 10:00 India time, stored in the database settings), for each customer, if any unpaid bill is exactly
    −3, 0, 3, 7, 15 or 30 days past due, one WhatsApp message goes out with the customer's total dues
    (`app/reminders/engine.py`). The message's tone (which template) follows the customer's oldest unpaid bill. Rules can be switched on/off on the Rules page.
 3. Customers who are opted out, paused, have no number, or paid something today are skipped. Disputed bills
@@ -50,15 +58,14 @@ Run the tests with `pytest`.
    names and text) and wait for approval.
 3. Set `WHATSAPP_PROVIDER=meta`, `META_WA_TOKEN` (permanent system-user token), `META_WA_PHONE_NUMBER_ID`.
 4. Deploy on a public HTTPS URL and set the webhook to `https://<domain>/webhooks/whatsapp` with
-   `META_WA_VERIFY_TOKEN`; subscribe to `messages`. Delivery/read ticks and customer replies then show
+   `META_WA_VERIFY_TOKEN`; subscribe to `messages`. Also set `META_APP_SECRET` (App settings → Basic) so the
+   app can verify each webhook's `X-Hub-Signature-256`; in production, unsigned webhooks are refused. Delivery/read ticks and customer replies then show
    on the Reminders page.
 
 ## Not done yet
 
 - Single admin login only (no owner/accountant/salesman roles).
-- Webhook signature (`X-Hub-Signature-256`) check.
 - Salesman/owner WhatsApp alerts for the 15/30-day rules (shown on the Call list instead).
-- Database migrations (tables are created automatically; add Alembic before changing the schema in production).
 - Direct sync with Busy/Marg (file upload only for now).
 - Opening-balance and "On Account" lines without a bill number are skipped, so dues carried in an opening
   balance won't get reminders.

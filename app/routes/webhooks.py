@@ -5,6 +5,11 @@ https://<your-domain>/webhooks/whatsapp and the verify token to META_WA_VERIFY_T
 then subscribe to the 'messages' field.
 """
 
+import hashlib
+import hmac
+import json
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import select
@@ -15,6 +20,7 @@ from app.db import get_db
 from app.models import Customer, InboundMessage, ReminderLog
 
 router = APIRouter(prefix="/webhooks")
+log = logging.getLogger("reminders.webhook")
 
 STATUS_ORDER = {"queued": 0, "sent": 1, "delivered": 2, "read": 3}
 
@@ -50,8 +56,28 @@ def handle_payload(db: Session, payload: dict) -> None:
     db.commit()
 
 
+def signature_ok(body: bytes, header: str | None, secret: str) -> bool:
+    """Meta signs each webhook body: X-Hub-Signature-256: sha256=<hex HMAC of the raw body with the app secret>."""
+    if not header or not header.startswith("sha256="):
+        return False
+    expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, header.removeprefix("sha256="))
+
+
 @router.post("/whatsapp")
 async def receive(request: Request, db: Session = Depends(get_db)):
-    # TODO before production: verify the X-Hub-Signature-256 header with the Meta app secret.
-    handle_payload(db, await request.json())
+    body = await request.body()
+    if config.META_APP_SECRET:
+        if not signature_ok(body, request.headers.get("X-Hub-Signature-256"), config.META_APP_SECRET):
+            raise HTTPException(status_code=401, detail="bad signature")
+    elif config.IS_PRODUCTION:
+        # Without the secret anyone could post fake delivery receipts or replies.
+        raise HTTPException(status_code=503, detail="webhook signature verification not configured")
+    else:
+        log.warning("META_APP_SECRET not set: accepting unsigned webhook (development only)")
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid JSON") from None
+    handle_payload(db, payload)
     return {"ok": True}

@@ -9,7 +9,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
-from app import config
+from app import clock, config
 from app.db import get_db
 from app.importers.outstanding import ImportError_, import_customers, import_outstanding, normalize_phone
 from app.models import (
@@ -24,13 +24,15 @@ from app.models import (
     ReminderRule,
 )
 from app.reminders.engine import call_list, run_reminders
+from app.security import csrf_input, csrf_protect
 from app.whatsapp.provider import get_provider
 
 templates = Jinja2Templates(directory=Path(__file__).resolve().parent.parent / "templates")
 templates.env.filters["inr"] = lambda v: f"{Decimal(v or 0):,.2f}"
 templates.env.globals["config"] = config
+templates.env.globals["csrf_input"] = csrf_input
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(csrf_protect)])
 
 
 def require_login(request: Request) -> str:
@@ -79,7 +81,7 @@ def _buckets(invoices: list[Invoice], today: date) -> dict[str, Decimal]:
 
 @router.get("/", response_class=HTMLResponse)
 def dashboard(request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
-    today = date.today()
+    today = clock.today()
     unpaid = db.scalars(select(Invoice).options(joinedload(Invoice.customer)).where(Invoice.status.in_(UNPAID_STATUSES))).all()
     total = sum((i.balance for i in unpaid), Decimal(0))
     overdue = sum((i.balance for i in unpaid if i.days_overdue(today) > 0), Decimal(0))
@@ -143,7 +145,7 @@ def customer_detail(cid: int, request: Request, db: Session = Depends(get_db), u
     return templates.TemplateResponse(
         request,
         "customer_detail.html",
-        {"c": c, "invoices": invoices, "logs": logs, "replies": replies, "today": date.today(), "error": request.query_params.get("error")},
+        {"c": c, "invoices": invoices, "logs": logs, "replies": replies, "today": clock.today(), "error": request.query_params.get("error")},
     )
 
 
@@ -189,7 +191,7 @@ def record_payment(
         amt = Decimal(0)
     if amt <= 0:
         return redirect(f"/customers/{inv.customer_id}?error=Enter+a+valid+amount")
-    db.add(Payment(invoice=inv, amount=amt, paid_on=date.today(), mode=mode, note=note or None))
+    db.add(Payment(invoice=inv, amount=amt, paid_on=clock.today(), mode=mode, note=note or None))
     inv.amount_paid = Decimal(inv.amount_paid or 0) + amt
     inv.refresh_status()
     db.commit()

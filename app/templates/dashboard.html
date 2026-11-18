@@ -26,7 +26,7 @@
       Provider: <span class="badge {{ 'dryrun' if config.WHATSAPP_PROVIDER != 'meta' }}">{{ config.WHATSAPP_PROVIDER }}</span>
       {% if config.WHATSAPP_PROVIDER != 'meta' %}<span class="muted">(dry run: messages are logged, not sent)</span>{% endif %}
     </div>
-    <form method="post" action="/reminders/run"><button>Run reminders now</button></form>
+    <form method="post" action="/reminders/run">{{ csrf_input(request) }}<button>Run reminders now</button></form>
   </div>
 </div>
 

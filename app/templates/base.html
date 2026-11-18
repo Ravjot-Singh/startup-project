@@ -21,7 +21,7 @@
     <a href="/call-list" class="{{ 'active' if path == '/call-list' }}">Call list</a>
     <a href="/rules" class="{{ 'active' if path == '/rules' }}">Rules</a>
   </nav>
-  <form method="post" action="/logout" class="inline"><button class="secondary">Log out</button></form>
+  <form method="post" action="/logout" class="inline">{{ csrf_input(request) }}<button class="secondary">Log out</button></form>
 </header>
 <main>
 {% block content %}{% endblock %}

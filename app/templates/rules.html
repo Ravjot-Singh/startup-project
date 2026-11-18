@@ -14,7 +14,7 @@
       <td class="num">{{ '%+d' % r.offset_days }}</td>
       <td><code>{{ r.template_name }}</code></td>
       <td>{% if r.is_active %}<span class="badge sent">on</span>{% else %}<span class="badge skipped">off</span>{% endif %}</td>
-      <td><form method="post" action="/rules/{{ r.id }}/toggle" class="inline"><button class="secondary">{{ 'Turn off' if r.is_active else 'Turn on' }}</button></form></td>
+      <td><form method="post" action="/rules/{{ r.id }}/toggle" class="inline">{{ csrf_input(request) }}<button class="secondary">{{ 'Turn off' if r.is_active else 'Turn on' }}</button></form></td>
     </tr>
     {% endfor %}
   </table>

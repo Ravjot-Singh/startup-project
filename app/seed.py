@@ -11,6 +11,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import clock
 from app.db import SessionLocal, init_db
 from app.models import Customer, Invoice, ReminderRule
 
@@ -41,7 +42,7 @@ def seed_rules(db: Session) -> None:
 
 
 def seed_demo(db: Session, today: date | None = None) -> None:
-    today = today or date.today()
+    today = today or clock.today()
     if db.scalar(select(Customer).limit(1)):
         return
     people = [

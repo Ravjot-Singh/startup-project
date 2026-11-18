@@ -16,7 +16,7 @@ from urllib.parse import quote
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
-from app import config
+from app import clock, config, settings
 from app.models import UNPAID_STATUSES, Customer, Invoice, Payment, ReminderLog, ReminderRule
 from app.whatsapp.provider import WhatsAppProvider
 from app.whatsapp.templates import render
@@ -90,14 +90,15 @@ def run_reminders(
     now: datetime | None = None,
     enforce_window: bool = True,
 ) -> RunSummary:
-    today = today or date.today()
-    now = now or datetime.now()
+    now = now or clock.now()
+    today = today or now.date()
     summary = RunSummary(run_date=today)
 
-    if enforce_window and not (config.SEND_WINDOW_START <= now.hour < config.SEND_WINDOW_END):
+    start, end = settings.get_int(db, "send_window_start"), settings.get_int(db, "send_window_end")
+    if enforce_window and not (start <= now.hour < end):
         summary.outside_window = True
         summary.details.append(
-            f"Not sending: {now:%H:%M} is outside the {config.SEND_WINDOW_START}:00-{config.SEND_WINDOW_END}:00 window"
+            f"Not sending: {now:%H:%M} is outside the {start}:00-{end}:00 window"
         )
         return summary
 
@@ -168,7 +169,7 @@ def run_reminders(
         log.status = result.status if result.ok else "failed"
         log.provider_msg_id = result.message_id
         log.error = result.error
-        log.sent_at = datetime.now() if result.ok else None
+        log.sent_at = clock.now() if result.ok else None
         if result.ok:
             summary.sent += 1
             summary.details.append(f"{rule.name} -> {customer.display_name} (Rs. {fmt_amount(total)})")
@@ -182,7 +183,7 @@ def run_reminders(
 
 def call_list(db: Session, today: date | None = None, min_days_overdue: int = 15) -> list[dict]:
     """Customers whose oldest unpaid invoice is at least min_days_overdue late, worst first."""
-    today = today or date.today()
+    today = today or clock.today()
     rows: dict[int, dict] = {}
     for inv in db.scalars(
         select(Invoice).options(joinedload(Invoice.customer)).where(Invoice.status.in_(UNPAID_STATUSES))

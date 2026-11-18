@@ -1,0 +1,37 @@
+# Render Blueprint: free web service. The database is Neon (free Postgres), not Render's.
+# Setup steps: docs/deploy-staging.md
+services:
+  - type: web
+    name: payment-reminders-staging
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    # Migrations run automatically on start (app/db.py: migrate)
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips '*'
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.10
+      - key: APP_ENV
+        value: production
+      - key: TIMEZONE
+        value: Asia/Kolkata
+      - key: WHATSAPP_PROVIDER
+        value: dryrun # staging never sends real messages
+      - key: LOCAL_SCHEDULER
+        value: "false" # cron-job.org calls /jobs/tick instead
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: TICK_TOKEN
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false # paste the Neon connection string
+      - key: ADMIN_USERNAME
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: BUSINESS_NAME
+        sync: false
+      - key: BUSINESS_UPI_ID
+        sync: false

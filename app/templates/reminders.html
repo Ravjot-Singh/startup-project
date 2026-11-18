@@ -12,7 +12,7 @@
       <td>{{ m.received_at.strftime('%d-%b %H:%M') }}</td>
       <td>{% if m.customer %}<a href="/customers/{{ m.customer.id }}">{{ m.customer.display_name }}</a>{% else %}{{ m.phone }}{% endif %}</td>
       <td>{{ m.text }}</td>
-      <td>{% if not m.handled %}<form method="post" action="/replies/{{ m.id }}/handled" class="inline"><button class="secondary">Mark handled</button></form>{% else %}<span class="muted">handled</span>{% endif %}</td>
+      <td>{% if not m.handled %}<form method="post" action="/replies/{{ m.id }}/handled" class="inline">{{ csrf_input(request) }}<button class="secondary">Mark handled</button></form>{% else %}<span class="muted">handled</span>{% endif %}</td>
     </tr>
     {% else %}<tr><td colspan="4" class="muted">No replies yet.</td></tr>{% endfor %}
   </table>

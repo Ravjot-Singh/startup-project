@@ -28,7 +28,7 @@
     <strong>Marg:</strong> Reports → Outstanding → Party-wise / Bill-wise Outstanding (Receivable) → Excel export.<br>
     Report menu names vary by version; any bill-wise receivable report with bill no., bill date and amount/balance works.
   </p>
-  <form method="post" action="/import" enctype="multipart/form-data" class="row">
+  <form method="post" action="/import" enctype="multipart/form-data" class="row">{{ csrf_input(request) }}
     <input type="file" name="file" accept=".xls,.xlsx,.xlsm,.csv" required>
     <label class="check"><input type="checkbox" name="full_report" value="true" checked>
       This is the full outstanding list (bills not in the file will be marked paid)</label>
@@ -43,7 +43,7 @@
     (Busy: Account master list for Sundry Debtors · Marg: Party/Ledger list) with columns like
     Party Name, Mobile, Area, Salesman, Credit Days.
   </p>
-  <form method="post" action="/import/customers" enctype="multipart/form-data" class="row">
+  <form method="post" action="/import/customers" enctype="multipart/form-data" class="row">{{ csrf_input(request) }}
     <input type="file" name="file" accept=".xls,.xlsx,.xlsm,.csv" required>
     <button>Upload customer list</button>
   </form>
