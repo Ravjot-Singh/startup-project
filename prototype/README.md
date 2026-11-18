@@ -3,6 +3,9 @@
 A web app (works on laptop and phone, installable as a PWA) that imports the distributor's outstanding bills
 from their billing software and sends automatic WhatsApp payment reminders to customers.
 
+All the code lives in this `prototype/` folder; run the commands below from here.
+The idea behind the project is in [../idea.md](../idea.md).
+
 ## Run locally
 
 ```

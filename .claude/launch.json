@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "reminder-app",
-      "runtimeExecutable": ".venv/Scripts/python.exe",
-      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--port", "8000"],
+      "runtimeExecutable": "prototype/.venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--app-dir", "prototype", "--port", "8000"],
       "port": 8000
     }
   ]

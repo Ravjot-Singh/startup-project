@@ -17,7 +17,8 @@ Staging runs with `WHATSAPP_PROVIDER=dryrun`: messages are logged on the Reminde
 
 ## 2. App (Render)
 1. Push this repo to GitHub.
-2. In Render, go to **New → Blueprint** and pick the repo. It reads `render.yaml`.
+2. In Render, go to **New → Blueprint**, pick the repo, and set the Blueprint path to `prototype/render.yaml`
+   (the app lives in the `prototype/` folder).
 3. Fill in the values marked `sync: false`:
    - `DATABASE_URL`: the Neon string.
    - `ADMIN_USERNAME`, `ADMIN_PASSWORD` (10+ characters), `BUSINESS_NAME`, `BUSINESS_UPI_ID`.
@@ -47,6 +48,7 @@ A tick is safe to run any number of times: each customer gets each reminder at m
 
 ## Run the tests against Postgres yourself
 ```bash
+cd prototype
 TEST_DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/reminders_test python -m pytest -q
 ```
 Use an **empty, throw-away** database: the tests drop and recreate every table. CI does this on every push (`.github/workflows/ci.yml`).

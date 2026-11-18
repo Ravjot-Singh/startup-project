@@ -1,9 +1,10 @@
-# Render Blueprint: free web service. The database is Neon (free Postgres), not Render's.
+# Render Blueprint (set the Blueprint path to prototype/render.yaml): free web service. The database is Neon (free Postgres), not Render's.
 # Setup steps: docs/deploy-staging.md
 services:
   - type: web
     name: payment-reminders-staging
     runtime: python
+    rootDir: prototype # the app lives in the prototype/ folder of the repo
     plan: free
     region: singapore
     buildCommand: pip install -r requirements.txt

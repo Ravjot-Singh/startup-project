@@ -1,8 +1,11 @@
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# The project folder (prototype/): .env and the local SQLite database live here, wherever the app is started from.
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(PROJECT_DIR / ".env")
 
 
 def _int(name: str, default: int) -> int:
@@ -25,7 +28,7 @@ def normalize_db_url(url: str) -> str:
 APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
 IS_PRODUCTION = APP_ENV == "production"
 
-DATABASE_URL = normalize_db_url(os.getenv("DATABASE_URL", "sqlite:///./reminders.db"))
+DATABASE_URL = normalize_db_url(os.getenv("DATABASE_URL", f"sqlite:///{(PROJECT_DIR / 'reminders.db').as_posix()}"))
 
 # All dates/times in the app are in this zone, whatever the server clock is set to.
 TIMEZONE = os.getenv("TIMEZONE", "Asia/Kolkata")
