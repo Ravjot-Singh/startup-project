@@ -71,8 +71,15 @@ Free-tier staging (Render + Neon + cron-job.org): see [docs/deploy-staging.md](d
    order again with the catalogue PDF uploaded on Settings. It goes out around when they usually order (their
    median gap between bills, or a fallback number of days) and is cancelled if they order first. A reply of
    "Stop promotions" switches off only these marketing messages.
-6. **Call list** shows customers 15+ days overdue for salesmen to follow up.
-7. **Payments** (`app/payments.py`): the owner records money received on the customer page and chooses which
+6. **Promotions** (Promotions tab; `app/promotions.py`, `app/catalogue.py`, `app/leads.py`): products with photos
+   build a catalogue PDF; catalogues form a library (one is "current" for reorder invites). Leads (people who
+   aren't customers yet) are added by hand or imported from CSV/Excel, always with how they agreed, and become
+   customers when billed. A promotion sends a catalogue or a photo with an offer to customers, leads or both,
+   filtered by area, salesman or tag. Only people with recorded consent get it; the preview shows the count,
+   who is left out and why, and an estimated Meta cost. It goes out in small batches every tick and reports
+   sent / delivered / read / failed / replies.
+7. **Call list** shows customers 15+ days overdue for salesmen to follow up.
+8. **Payments** (`app/payments.py`): the owner records money received on the customer page and chooses which
    bills it pays; anything left over is kept as credit and can be put against bills later. Typed payments can
    be undone. Busy uploads never lower a payment: if Busy shows more paid, the difference is added; if it
    shows less, the app keeps its own figure and marks the bill "Busy not updated yet". Bills are identified

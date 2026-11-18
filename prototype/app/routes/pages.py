@@ -11,7 +11,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from app import bills, clock, config, payments, settings, ui
+from app import bills, catalogue, clock, config, payments, settings, ui
 from app.dashboard import build_today, sending_status
 from app.db import get_db
 from app.importers.outstanding import ImportError_, import_customers, import_outstanding, normalize_phone
@@ -133,6 +133,7 @@ def customers(request: Request, q: str = "", missing: str = "", db: Session = De
         stmt = stmt.where(or_(Customer.name.ilike(like), Customer.shop_name.ilike(like), Customer.phone.ilike(like), Customer.area.ilike(like)))
     if missing == "phone":
         stmt = stmt.where(Customer.phone.is_(None))
+    stmt = stmt.where(Customer.is_lead.is_(False))  # leads have their own page under Promotions
     rows = db.scalars(stmt).all()
     balances = dict(
         db.execute(
@@ -188,6 +189,7 @@ def customer_edit(
     reminders_paused: bool = Form(False),
     marketing_opt_in: bool = Form(False),
     consent_source: str = Form(""),
+    tags: str = Form(""),
     db: Session = Depends(get_db),
     user: str = Depends(require_login),
 ):
@@ -199,6 +201,9 @@ def customer_edit(
     elif not marketing_opt_in:
         c.marketing_consent_at = c.marketing_consent_source = None
     c.marketing_opt_in = marketing_opt_in
+    from app.leads import normalize_tags
+
+    c.tags = normalize_tags(tags)
     if phone.strip():
         normalized = normalize_phone(phone)
         if not normalized:
@@ -419,6 +424,7 @@ def settings_page(request: Request, db: Session = Depends(get_db), user: str = D
         "auto_bills": settings.get_bool(db, "send_bills_automatically"),
         "thanks_on": settings.get_bool(db, "send_thank_you"), "reorder_on": settings.get_bool(db, "send_reorder_invites"),
         "fallback_days": settings.get_int(db, "reorder_fallback_days"), "catalogue": followups.current_catalogue(db),
+        "promo_cost": settings.get(db, "marketing_message_cost"), "promo_batch": settings.get_int(db, "promo_batch_size"),
     })
 
 
@@ -439,7 +445,7 @@ def save_followups(request: Request, send_thank_you: bool = Form(False), send_re
 async def upload_catalogue(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db),
                            user: str = Depends(require_login)):
     try:
-        followups.set_catalogue(db, file.filename or "catalogue.pdf", await file.read())
+        catalogue.add_catalogue(db, file.filename or "catalogue.pdf", await file.read())
     except storage.StorageError as e:
         db.rollback()
         flash(request, str(e), "error")
@@ -450,7 +456,11 @@ async def upload_catalogue(request: Request, file: UploadFile = File(...), db: S
 
 @router.post("/settings/catalogue/remove")
 def remove_catalogue(request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
-    followups.remove_catalogue(db)
+    if (f := catalogue.current_catalogue(db)) is not None:
+        try:
+            catalogue.delete_catalogue(db, f.id)
+        except storage.StorageError:  # used by a promotion: keep the file, just stop using it for invites
+            settings.set_value(db, "current_catalogue_file_id", "")
     flash(request, "Catalogue removed. Reorder invites wait until you upload a new one.", "warn")
     return redirect("/settings")
 

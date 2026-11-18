@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Promotions{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Promotions</h1>
+    <p class="muted">Send your catalogue or an offer to customers and leads who agreed to receive them.</p>
+  </div>
+  <a class="btn" href="/promotions/new">New promotion</a>
+</div>
+
+<section class="kpis" aria-label="Who you can reach">
+  <div class="kpi">
+    <div class="label">Customers who agreed to offers</div>
+    <div class="value">{{ customers_ok }}</div>
+    <div class="hint">of {{ customers_total }} customers</div>
+  </div>
+  <div class="kpi">
+    <div class="label">Leads</div>
+    <div class="value">{{ leads }}</div>
+    <div class="hint"><a href="/leads">Add or import leads</a></div>
+  </div>
+  <div class="kpi">
+    <div class="label">Products in catalogue</div>
+    <div class="value">{{ products }}</div>
+    <div class="hint"><a href="/products">Products</a> · <a href="/catalogues">Catalogues</a></div>
+  </div>
+</section>
+
+<section class="card section" aria-labelledby="list">
+  <h2 id="list">Your promotions</h2>
+  {% if campaigns %}
+  <ul class="list">
+    {% for c in campaigns %}
+    {% set r = reports.get(c.id) %}
+    <li>
+      <div class="grow">
+        <div class="title"><a href="/promotions/{{ c.id }}">{{ c.name }}</a></div>
+        <div class="muted small">
+          {{ 'Catalogue' if c.content == 'catalogue' else 'Offer' }} · {{ c.created_at | when(today) }}
+          {% if r %} · {{ r.sent }} of {{ r.total }} sent{% if r.read %} · {{ r.read }} read{% endif %}{% if r.replies %} · {{ r.replies }} repl{{ 'ies' if r.replies != 1 else 'y' }}{% endif %}{% endif %}
+        </div>
+      </div>
+      {% set badge = {'draft': ('info', 'Draft'), 'scheduled': ('pending', 'Scheduled'), 'sending': ('warn', 'Sending'), 'done': ('ok', 'Sent'), 'cancelled': ('skipped', 'Cancelled')}[c.status] %}
+      <span class="badge {{ badge[0] }} end">{{ badge[1] }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty">No promotions yet.{% if not catalogues %} Start by <a href="/products">adding products</a> to build a catalogue, or <a href="/catalogues">upload one</a>.{% endif %}</p>
+  {% endif %}
+</section>
+{% endblock %}

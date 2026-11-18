@@ -14,7 +14,7 @@ from statistics import median
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import config, settings, storage, ui
+from app import config, settings, ui
 from app.models import (
     CANCELLED,
     KIND_REORDER,
@@ -35,7 +35,6 @@ from app.whatsapp.templates import REORDER_TEMPLATE, THANKS_TEMPLATE, render
 STALE_EVENT_DAYS = 3        # a payoff noticed later than this gets no thank-you (it would be odd so late)
 GAP_LIMITS = (3, 60)        # a usual gap between orders outside this is ignored as unreliable
 MIN_BILLS_FOR_RHYTHM = 3    # need at least this many bills (two gaps) to trust a customer's rhythm
-CATALOGUE = "catalogue"
 
 
 # ---------- when to invite a reorder ----------
@@ -94,29 +93,8 @@ def cancel_reorders(db: Session, customer_ids, reason: str = "Ordered again") ->
 
 
 # ---------- the catalogue sent with invites ----------
-
-def current_catalogue(db: Session):
-    file_id = settings.get(db, "current_catalogue_file_id")
-    return storage.load(db, int(file_id)) if file_id.isdigit() else None
-
-
-def set_catalogue(db: Session, filename: str, data: bytes) -> None:
-    if not filename.lower().endswith(".pdf") or not data.startswith(b"%PDF"):
-        raise storage.StorageError("The catalogue must be a PDF file")
-    old = current_catalogue(db)
-    f = storage.save(db, CATALOGUE, filename, "application/pdf", data)
-    settings.set_value(db, "current_catalogue_file_id", f.id)
-    if old is not None:
-        db.delete(old)
-        db.commit()
-
-
-def remove_catalogue(db: Session) -> None:
-    old = current_catalogue(db)
-    settings.set_value(db, "current_catalogue_file_id", "")
-    if old is not None:
-        db.delete(old)
-        db.commit()
+# The catalogue library lives in app/catalogue.py; invites send its "current" catalogue.
+from app.catalogue import current_catalogue  # noqa: E402
 
 
 # ---------- sending ----------

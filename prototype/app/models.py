@@ -60,6 +60,10 @@ class Customer(Base):
     salesman: Mapped[str | None] = mapped_column(String(100))
     area: Mapped[str | None] = mapped_column(String(100))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # A lead is a prospect with no bills yet, added for promotions. They become a normal customer
+    # automatically when a Busy upload has a bill for them.
+    is_lead: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    tags: Mapped[str | None] = mapped_column(String(300))  # comma separated, lower case, e.g. "hotel,wholesale"
 
     invoices: Mapped[list["Invoice"]] = relationship(back_populates="customer")
     receipts: Mapped[list["Receipt"]] = relationship(back_populates="customer")
@@ -67,6 +71,10 @@ class Customer(Base):
     @property
     def display_name(self) -> str:
         return self.shop_name or self.name
+
+    @property
+    def tag_list(self) -> list[str]:
+        return [t for t in (self.tags or "").split(",") if t]
 
 
 class Invoice(Base):
@@ -196,6 +204,7 @@ KIND_MANUAL = "manual"      # the owner pressed "Send reminder now"
 KIND_BILL = "bill"          # a bill PDF (new bill, or the owner pressed "Send bill")
 KIND_THANKS = "thanks"      # thank-you once a customer has paid everything
 KIND_REORDER = "reorder"    # invitation to order again, with the catalogue (marketing)
+KIND_PROMO = "promo"        # part of a promotion (campaign) to many customers or leads (marketing)
 
 # Message statuses
 QUEUED = "queued"        # waiting to go out (scheduled_for may be later), or waiting to retry
@@ -215,6 +224,7 @@ class Message(Base):
     kind: Mapped[str] = mapped_column(String(20), default=KIND_REMINDER, index=True)
     rule_id: Mapped[int | None] = mapped_column(ForeignKey("reminder_rules.id"))
     invoice_id: Mapped[int | None] = mapped_column(ForeignKey("invoices.id"))  # for bill messages
+    campaign_id: Mapped[int | None] = mapped_column(ForeignKey("campaigns.id"), index=True)  # for promotion messages
     template_name: Mapped[str | None] = mapped_column(String(100))
     run_date: Mapped[date] = mapped_column(Date, index=True)  # the day it is for
     scheduled_for: Mapped[datetime | None] = mapped_column(DateTime, index=True)  # not before this time
@@ -235,6 +245,7 @@ class Message(Base):
     customer: Mapped[Customer] = relationship()
     rule: Mapped[ReminderRule | None] = relationship()
     invoice: Mapped[Invoice | None] = relationship()
+    campaign: Mapped["Campaign | None"] = relationship(back_populates="messages")
 
     @property
     def is_sent(self) -> bool:
@@ -308,3 +319,54 @@ class StoredFile(Base):
     sha256: Mapped[str] = mapped_column(String(64), index=True)
     data: Mapped[bytes] = mapped_column(LargeBinary)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
+class Product(Base):
+    """Something the business sells; active products make up the generated catalogue."""
+
+    __tablename__ = "products"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    category: Mapped[str | None] = mapped_column(String(100), index=True)
+    unit: Mapped[str | None] = mapped_column(String(100))  # e.g. "1 kg pack", "box of 24"
+    price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    photo_file_id: Mapped[int | None] = mapped_column(ForeignKey("stored_files.id"))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
+# Campaign statuses
+DRAFT = "draft"
+SCHEDULED = "scheduled"  # messages queued for a later time
+SENDING = "sending"      # messages queued, going out in batches
+DONE = "done"
+CAMPAIGN_CANCELLED = "cancelled"
+
+# What a promotion sends
+CONTENT_CATALOGUE = "catalogue"  # a catalogue PDF (template catalogue_promo)
+CONTENT_OFFER = "offer"          # a photo with an offer line (template offer_image)
+
+
+class Campaign(Base):
+    """A promotion: one message to many customers and/or leads who agreed to offers."""
+
+    __tablename__ = "campaigns"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    content: Mapped[str] = mapped_column(String(20), default=CONTENT_CATALOGUE)
+    message_line: Mapped[str] = mapped_column(String(300), default="")  # {{3}} in the template
+    catalogue_file_id: Mapped[int | None] = mapped_column(ForeignKey("stored_files.id"))
+    image_file_id: Mapped[int | None] = mapped_column(ForeignKey("stored_files.id"))
+    # Audience
+    audience: Mapped[str] = mapped_column(String(20), default="customers")  # customers / leads / everyone
+    area: Mapped[str | None] = mapped_column(String(100))
+    salesman: Mapped[str | None] = mapped_column(String(100))
+    tag: Mapped[str | None] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(20), default=DRAFT, index=True)
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime)
+    queued_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+    messages: Mapped[list[Message]] = relationship(back_populates="campaign")

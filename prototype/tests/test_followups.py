@@ -11,6 +11,7 @@ from app.importers.outstanding import import_outstanding
 from app.jobs import run_tick
 from app.models import Customer, CustomerEvent, Invoice, Message
 from app.payments import record_payment
+from app import catalogue
 from app.reminders import followups
 from app.reminders.followups import reorder_date, usual_gap_days
 from app.routes.webhooks import handle_payload
@@ -98,7 +99,7 @@ def test_reorder_date_uses_rhythm_or_fallback(db):
 # ---------- thank-you and invite ----------
 
 def test_payoff_sends_thanks_now_and_invite_later_with_catalogue(db):
-    followups.set_catalogue(db, "Catalogue Nov.pdf", CATALOGUE)
+    catalogue.add_catalogue(db, "Catalogue Nov.pdf", CATALOGUE)
     c = cust(db)
     for i, d in enumerate([date(2026, 10, 13), date(2026, 10, 20), date(2026, 10, 27)]):
         bill(db, c, f"OLD{i}", d, paid=1000)
@@ -136,7 +137,7 @@ def test_no_invite_without_consent_but_still_thanked(db):
 
 
 def test_invite_cancelled_when_they_order_again_first(db):
-    followups.set_catalogue(db, "c.pdf", CATALOGUE)
+    catalogue.add_catalogue(db, "c.pdf", CATALOGUE)
     c = cust(db)
     pay_off(db, c, bill(db, c, "B1", date(2026, 11, 1)))
     tick(db, NOON)
@@ -147,7 +148,7 @@ def test_invite_cancelled_when_they_order_again_first(db):
 
 
 def test_invite_cancelled_at_send_time_if_a_bill_appeared_another_way(db):
-    followups.set_catalogue(db, "c.pdf", CATALOGUE)
+    catalogue.add_catalogue(db, "c.pdf", CATALOGUE)
     c = cust(db)
     pay_off(db, c, bill(db, c, "B1", date(2026, 11, 1)))
     tick(db, NOON)
@@ -170,7 +171,7 @@ def test_invite_without_a_catalogue_is_not_sent_and_needs_you(db):
 
 
 def test_invite_skipped_if_consent_withdrawn_or_paused(db):
-    followups.set_catalogue(db, "c.pdf", CATALOGUE)
+    catalogue.add_catalogue(db, "c.pdf", CATALOGUE)
     c = cust(db)
     pay_off(db, c, bill(db, c, "B1", date(2026, 11, 1)))
     tick(db, NOON)
@@ -221,14 +222,15 @@ def test_stop_words(db, text, whatsapp, marketing):
     assert (c.whatsapp_opt_in, c.marketing_opt_in) == (whatsapp, marketing)
 
 
-def test_catalogue_must_be_a_pdf_and_replacing_removes_the_old(db):
+def test_catalogue_library_current_and_delete(db):
     from app import storage
-    from app.models import StoredFile
 
     with pytest.raises(storage.StorageError):
-        followups.set_catalogue(db, "photo.jpg", b"\xff\xd8")
-    followups.set_catalogue(db, "a.pdf", CATALOGUE)
-    followups.set_catalogue(db, "b.pdf", CATALOGUE + b"2")
-    assert db.query(StoredFile).count() == 1 and followups.current_catalogue(db).filename == "b.pdf"
-    followups.remove_catalogue(db)
-    assert followups.current_catalogue(db) is None and db.query(StoredFile).count() == 0
+        catalogue.add_catalogue(db, "photo.jpg", bytes([0xFF, 0xD8]))
+    a = catalogue.add_catalogue(db, "a.pdf", CATALOGUE)
+    b = catalogue.add_catalogue(db, "b.pdf", CATALOGUE + b"2")
+    assert followups.current_catalogue(db).filename == "b.pdf" and len(catalogue.catalogues(db)) == 2
+    catalogue.set_current(db, a.id)
+    assert followups.current_catalogue(db).filename == "a.pdf"
+    catalogue.delete_catalogue(db, a.id)
+    assert followups.current_catalogue(db) is None and [f.filename for f in catalogue.catalogues(db)] == ["b.pdf"]

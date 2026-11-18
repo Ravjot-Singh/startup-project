@@ -9,7 +9,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from app import config
 from app.db import SessionLocal, migrate
 from app.jobs import run_tick
-from app.routes import jobs, pages, webhooks
+from app.routes import jobs, pages, promo_pages, webhooks
 from app.seed import seed_rules
 from app.whatsapp.provider import get_provider
 
@@ -58,3 +58,4 @@ app.mount("/static", StaticFiles(directory=Path(__file__).resolve().parent / "st
 app.include_router(jobs.router)
 app.include_router(webhooks.router)
 app.include_router(pages.router)
+app.include_router(promo_pages.router)

@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Leads{% endblock %}
+{% block content %}
+<p class="small"><a href="/promotions">← Promotions</a></p>
+<div class="page-head">
+  <div>
+    <h1>Leads</h1>
+    <p class="muted">People who aren't customers yet but agreed to hear about your products. When a Busy upload has a bill for one, they move to Customers.</p>
+  </div>
+</div>
+{% if error %}<div class="alert error" role="alert">{{ error }}</div>{% endif %}
+{% if result %}
+<div class="alert {{ 'warn' if result.errors else 'ok' }}" role="status">
+  <strong>Added {{ result.added }}, updated {{ result.updated }}.</strong>
+  {% if result.errors %}{{ result.errors | length }} row{{ 's' if result.errors | length != 1 }} skipped:
+  <ul class="small">{% for e in result.errors[:30] %}<li>{{ e }}</li>{% endfor %}</ul>{% endif %}
+</div>
+{% endif %}
+
+<section class="card" aria-labelledby="add">
+  <h2 id="add">Add a lead</h2>
+  <form method="post" action="/leads" class="form-grid">{{ csrf_input(request) }}
+    <div class="field"><label for="name">Name or shop</label><input id="name" name="name" maxlength="200" required></div>
+    <div class="field"><label for="phone">WhatsApp number</label><input id="phone" name="phone" inputmode="tel" required placeholder="98765 43210"></div>
+    <div class="field"><label for="area">Area</label><input id="area" name="area" maxlength="100"></div>
+    <div class="field"><label for="tags">Tags <span class="help">(comma separated)</span></label><input id="tags" name="tags" maxlength="300" placeholder="e.g. hotel, trade fair"></div>
+    <div class="field"><label for="consent_source">How they agreed to offers</label><input id="consent_source" name="consent_source" maxlength="200" required placeholder="e.g. filled our form at the trade fair"></div>
+    <div class="field"><button>Add lead</button></div>
+  </form>
+</section>
+
+<section class="card section" aria-labelledby="imp">
+  <h2 id="imp">Import a list</h2>
+  <p class="muted small">A CSV or Excel file with <strong>Name</strong> and <strong>Mobile</strong> columns; <strong>Area</strong>,
+    <strong>Tags</strong> and <strong>Consent</strong> columns are used if present. Only import people who agreed to receive
+    offers from you: WhatsApp can block numbers that message people who didn't.</p>
+  <form method="post" action="/leads/import" enctype="multipart/form-data" class="form-grid">{{ csrf_input(request) }}
+    <div class="field"><label for="leads-file">File</label><input id="leads-file" type="file" name="file" accept=".csv,.xls,.xlsx" required></div>
+    <div class="field"><label for="import-consent">How they agreed <span class="help">(for rows without a Consent column)</span></label>
+      <input id="import-consent" name="consent_source" maxlength="200" placeholder="e.g. signed up at our counter"></div>
+    <div class="field"><button class="secondary">Import</button></div>
+  </form>
+</section>
+
+<section class="card section" aria-labelledby="all">
+  <div class="card-head">
+    <h2 id="all">All leads ({{ leads | length }})</h2>
+  </div>
+  <form method="get" class="search" role="search">
+    <label for="q" class="sr-only">Search leads</label>
+    <input id="q" name="q" value="{{ q }}" placeholder="Search by name, number, area or tag">
+    <button class="secondary">Search</button>
+  </form>
+  {% if leads %}
+  <table class="cards">
+    <thead><tr><th scope="col">Lead</th><th scope="col">Number</th><th scope="col">Area</th><th scope="col">Tags</th><th scope="col">Agreed</th></tr></thead>
+    <tbody>
+    {% for c in leads %}
+    <tr>
+      <td class="primary"><a href="/customers/{{ c.id }}">{{ c.display_name }}</a></td>
+      <td data-label="Number">{{ ('+' ~ c.phone) if c.phone else '—' }}</td>
+      <td data-label="Area">{{ c.area or '—' }}</td>
+      <td data-label="Tags">{{ c.tag_list | join(', ') or '—' }}</td>
+      <td data-label="Agreed">{% if not c.whatsapp_opt_in %}<span class="badge failed">Said STOP</span>{% elif c.marketing_opt_in %}{{ c.marketing_consent_source }}{% else %}<span class="badge skipped">No</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="empty">{{ 'No lead matches “' ~ q ~ '”.' if q else 'No leads yet.' }}</p>{% endif %}
+</section>
+{% endblock %}

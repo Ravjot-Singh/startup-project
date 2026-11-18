@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Catalogues{% endblock %}
+{% block content %}
+<p class="small"><a href="/promotions">← Promotions</a></p>
+<div class="page-head">
+  <div>
+    <h1>Catalogues</h1>
+    <p class="muted">The current catalogue is sent with reorder invites. Promotions can send any of these.</p>
+  </div>
+</div>
+
+<section class="card" aria-labelledby="new">
+  <h2 id="new">Add a catalogue</h2>
+  <div class="actions">
+    <form method="post" action="/catalogues/build">{{ csrf_input(request) }}
+      <button {{ 'disabled' if not products }}>Build from my {{ products }} product{{ 's' if products != 1 }}</button>
+    </form>
+    {% if not products %}<a href="/products">Add products first</a>{% endif %}
+  </div>
+  <form method="post" action="/catalogues" enctype="multipart/form-data" class="form-grid section">{{ csrf_input(request) }}
+    <div class="field">
+      <label for="cat-file">…or upload your own PDF</label>
+      <input id="cat-file" type="file" name="file" accept=".pdf,application/pdf" required>
+    </div>
+    <div class="field"><button class="secondary">Upload</button></div>
+  </form>
+</section>
+
+<section class="card section" aria-labelledby="lib">
+  <h2 id="lib">Your catalogues</h2>
+  {% if catalogues %}
+  <ul class="list">
+    {% for f in catalogues %}
+    {% set is_current = current and f.id == current.id %}
+    <li style="flex-wrap: wrap">
+      <div class="grow">
+        <div class="title"><a href="/files/{{ f.id }}" target="_blank" rel="noopener">{{ f.filename }}</a></div>
+        <div class="muted small">{{ f.created_at | when(today) }} · {{ (f.size / 1024) | round | int }} KB</div>
+      </div>
+      {% if is_current %}<span class="badge ok">Current</span>{% else %}
+      <form method="post" action="/catalogues/{{ f.id }}/current">{{ csrf_input(request) }}<button class="quiet" aria-label="Make {{ f.filename }} the current catalogue">Make current</button></form>
+      {% endif %}
+      <form method="post" action="/catalogues/{{ f.id }}/delete" class="end">{{ csrf_input(request) }}<button class="quiet" aria-label="Remove {{ f.filename }}">Remove</button></form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}<p class="empty">No catalogues yet.</p>{% endif %}
+</section>
+{% endblock %}

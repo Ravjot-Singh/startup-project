@@ -30,6 +30,11 @@ DEFAULTS: dict[str, Callable[[], str]] = {
     "reorder_fallback_days": lambda: "7",
     # The catalogue PDF sent with reorder invites (a stored file id; empty = none uploaded yet).
     "current_catalogue_file_id": lambda: "",
+    # Meta's charge per marketing message in India (Rs.), only used to estimate a promotion's cost.
+    # Meta changes its prices: check the current rate in WhatsApp Manager -> Pricing.
+    "marketing_message_cost": lambda: "0.80",
+    # Promotion messages sent per tick (every ~10 min), to stay well inside WhatsApp's sending limits.
+    "promo_batch_size": lambda: "40",
 }
 
 

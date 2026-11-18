@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}{{ c.name }}{% endblock %}
+{% block content %}
+<p class="small"><a href="/promotions">← Promotions</a></p>
+<div class="page-head">
+  <div>
+    <h1>{{ c.name }}</h1>
+    <p class="muted">{{ audiences[c.audience] }}{% if c.area %} · {{ c.area }}{% endif %}{% if c.salesman %} · {{ c.salesman }}{% endif %}{% if c.tag %} · tag “{{ c.tag }}”{% endif %}</p>
+  </div>
+  {% set badge = {'draft': ('info', 'Draft: not sent'), 'scheduled': ('pending', 'Scheduled'), 'sending': ('warn', 'Sending'), 'done': ('ok', 'Sent'), 'cancelled': ('skipped', 'Cancelled')}[c.status] %}
+  <span class="badge {{ badge[0] }}">{{ badge[1] }}</span>
+</div>
+{% if error %}<div class="alert error" role="alert">{{ error }}</div>{% endif %}
+
+{% if report %}
+<section class="kpis" aria-label="Results">
+  <div class="kpi"><div class="label">Sent</div><div class="value">{{ report.sent }} <span class="small muted">of {{ report.total }}</span></div>
+    <div class="hint">{% if report.waiting %}{{ report.waiting }} still to go{% if c.status == 'scheduled' %}, from {{ c.scheduled_for | when_phrase(today) }} at {{ c.scheduled_for.strftime('%H:%M') }}{% endif %}{% else %}All done{% endif %}</div></div>
+  <div class="kpi"><div class="label">Delivered · read</div><div class="value">{{ report.delivered }} · {{ report.read }}</div>
+    <div class="hint">{% if report.failed %}{{ report.failed }} failed{% else %}None failed{% endif %}{% if report.not_sent %} · {{ report.not_sent }} not sent{% endif %}</div></div>
+  <div class="kpi ok"><div class="label">Replies</div><div class="value">{{ report.replies }}</div><div class="hint"><a href="/messages#replies">Read replies</a></div></div>
+</section>
+{% if c.status in ('scheduled', 'sending') %}
+<form method="post" action="/promotions/{{ c.id }}/cancel" class="section">{{ csrf_input(request) }}
+  <button class="danger">Cancel the rest</button>
+</form>
+{% endif %}
+{% else %}
+<section class="card" aria-labelledby="reach">
+  <h2 id="reach">Who gets it</h2>
+  <p class="kpi-inline"><strong class="money" style="font-size:1.6rem">{{ aud.count }}</strong> {{ 'person' if aud.count == 1 else 'people' }}
+    · about <strong>₹{{ cost | inr }}</strong> <span class="muted small">(at ₹{{ rate }} a message)</span></p>
+  {% if aud.left_out %}
+  <p class="muted small">Left out: {% for why, n in aud.left_out.most_common() %}{{ n }} {{ why }}{{ ', ' if not loop.last }}{% endfor %}.</p>
+  {% endif %}
+  {% if aud.recipients %}
+  <details><summary class="small">See who</summary>
+    <p class="small">{% for p in aud.recipients[:50] %}{{ p.display_name }}{{ ', ' if not loop.last }}{% endfor %}{% if aud.count > 50 %} and {{ aud.count - 50 }} more{% endif %}</p>
+  </details>
+  {% endif %}
+</section>
+{% endif %}
+
+<section class="card section" aria-labelledby="msg">
+  <h2 id="msg">The message</h2>
+  <div class="message-text">{{ preview }}</div>
+  {% if file %}<p class="small"><a href="/files/{{ file.id }}" target="_blank" rel="noopener">{{ 'Attached: ' ~ file.filename }}</a></p>{% endif %}
+  {% if c.content == 'offer' and file %}<img src="/files/{{ file.id }}" alt="Offer photo" style="max-width: 220px; border-radius: 10px; margin-top: 8px">{% endif %}
+</section>
+
+{% if c.status == 'draft' %}
+<section class="card section" aria-labelledby="send">
+  <h2 id="send">Send it</h2>
+  {% if aud.count %}
+  <form method="post" action="/promotions/{{ c.id }}/send">{{ csrf_input(request) }}
+    <button>Send now to {{ aud.count }} {{ 'person' if aud.count == 1 else 'people' }}</button>
+  </form>
+  <p class="muted small">It goes out in batches of {{ batch }} every 10 minutes, within your sending hours.</p>
+  <details class="section">
+    <summary>Schedule for later</summary>
+    <form method="post" action="/promotions/{{ c.id }}/send" class="form-grid">{{ csrf_input(request) }}
+      <div class="field"><label for="on">Date</label><input id="on" name="on" type="date" min="{{ today.isoformat() }}" required></div>
+      <div class="field"><label for="at">Time</label><input id="at" name="at" type="time" value="11:00" required></div>
+      <div class="field"><button class="secondary">Schedule</button></div>
+    </form>
+  </details>
+  {% else %}
+  <p>Nobody in this audience has agreed to offers yet. Record consent on customers' pages, or <a href="/leads">add leads</a>.</p>
+  {% endif %}
+  <form method="post" action="/promotions/{{ c.id }}/delete" class="section">{{ csrf_input(request) }}
+    <button class="danger">Delete draft</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

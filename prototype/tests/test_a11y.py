@@ -54,6 +54,22 @@ def _seed(db) -> int:
         ImportBatch(file_name="busy-outstanding.xlsx", rows_ok=3),
     ])
     db.commit()
+    # Promotions tab: a product with a photo, a catalogue, a lead and a draft promotion
+    import io
+
+    from PIL import Image
+
+    from app import catalogue, leads, promotions
+    from app.models import Product
+
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 40), (14, 124, 102)).save(buf, "PNG")
+    catalogue.save_product(db, Product(is_active=True), "Malai Paneer", "Dairy", "1 kg", "320", ("p.png", buf.getvalue()))
+    f = catalogue.build_and_add(db)
+    leads.add_or_update(db, "Hotel Blue", "9811100011", "trade fair", area="Civil Lines", tags="hotel")
+    a.marketing_opt_in = True
+    db.commit()
+    promotions.create(db, "November", "catalogue", "New range is in.", "everyone", catalogue_file_id=f.id)
     return a.id
 
 
@@ -137,7 +153,8 @@ def test_pages_have_no_serious_accessibility_problems(server, browser, viewport,
     page.wait_for_url(f"{base}/")
 
     for path in ["/", "/customers", f"/customers/{server['customer_id']}", "/call-list?days=0", "/messages",
-                 "/settings", "/rules", "/import"]:
+                 "/settings", "/rules", "/import", "/promotions", "/promotions/new", "/promotions/1", "/products",
+                 "/catalogues", "/leads"]:
         page.goto(base + path)
         page.evaluate("document.querySelectorAll('details').forEach(d => d.open = true)")  # check folded content too
         if v := _axe(page):
@@ -156,7 +173,8 @@ def test_phone_layout_has_no_sideways_scrolling(server, browser):
     page.click("button:has-text('Log in')")
     page.wait_for_url(f"{base}/")
     wide = {}
-    for path in ["/", "/customers", f"/customers/{server['customer_id']}", "/call-list?days=0", "/messages", "/settings", "/import"]:
+    for path in ["/", "/customers", f"/customers/{server['customer_id']}", "/call-list?days=0", "/messages", "/settings", "/import",
+                 "/promotions", "/promotions/new", "/promotions/1", "/products", "/catalogues", "/leads"]:
         page.goto(base + path)
         page.evaluate("document.querySelectorAll('details').forEach(d => d.open = true)")
         overflow = page.evaluate("document.documentElement.scrollWidth - window.innerWidth")

@@ -66,21 +66,27 @@
     <h3>Catalogue sent with invites</h3>
     {% if catalogue %}
     <p><a href="/catalogue.pdf" target="_blank" rel="noopener">{{ catalogue.filename }}</a>
-      <span class="muted small">· uploaded {{ catalogue.created_at | when(today) }}</span></p>
-    {% else %}<p class="muted">No catalogue yet. Reorder invites wait until you upload one.</p>{% endif %}
-    <form method="post" action="/settings/catalogue" enctype="multipart/form-data" class="form-grid">{{ csrf_input(request) }}
-      <div class="field">
-        <label for="catalogue-file">{{ 'Replace with a new PDF' if catalogue else 'Catalogue PDF' }}</label>
-        <input id="catalogue-file" type="file" name="file" accept=".pdf,application/pdf" required>
-      </div>
-      <div class="field"><button class="secondary">Upload</button></div>
-    </form>
-    {% if catalogue %}
-    <form method="post" action="/settings/catalogue/remove" class="section">{{ csrf_input(request) }}
-      <button class="danger">Remove catalogue</button>
-    </form>
-    {% endif %}
+      <span class="muted small">· {{ catalogue.created_at | when(today) }}</span></p>
+    {% else %}<p class="muted">No catalogue yet. Reorder invites wait until there is one.</p>{% endif %}
+    <a class="btn secondary" href="/catalogues">{{ 'Change catalogue' if catalogue else 'Build or upload a catalogue' }}</a>
   </div>
+</section>
+
+<section class="card section" aria-labelledby="promo-h" id="promo">
+  <h2 id="promo-h">Promotions</h2>
+  <form method="post" action="/settings/promotions" class="form-grid">{{ csrf_input(request) }}
+    <div class="field">
+      <label for="cost">Meta's charge per marketing message (₹)</label>
+      <input id="cost" name="cost" inputmode="decimal" value="{{ promo_cost }}">
+    </div>
+    <div class="field">
+      <label for="batch">Promotion messages per 10 minutes</label>
+      <input id="batch" name="batch" type="number" min="1" max="500" value="{{ promo_batch }}">
+    </div>
+    <div class="field"><button class="secondary">Save</button></div>
+  </form>
+  <p class="muted small">The charge is only used to estimate a promotion's cost; Meta changes its prices, so check
+    WhatsApp Manager → Pricing. Sending in small batches keeps a new WhatsApp number inside its daily limits.</p>
 </section>
 
 <section class="card section" aria-labelledby="schedule">

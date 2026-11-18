@@ -62,6 +62,15 @@ TEMPLATES["reorder_invite"] = (
 )
 REORDER_TEMPLATE = "reorder_invite"
 
+# Promotions (MARKETING). {{1}} customer, {{2}} business, {{3}} the owner's line for this promotion
+# catalogue_promo: header Document (a catalogue PDF); offer_image: header Image (a photo)
+TEMPLATES["catalogue_promo"] = (
+    "Hi {{1}}, here is the latest catalogue from {{2}}. {{3}} Reply to this message to order or to ask for prices."
+)
+TEMPLATES["offer_image"] = "Hi {{1}}, {{2}} has a new offer for you: {{3}}. Reply to this message to order."
+CATALOGUE_PROMO_TEMPLATE = "catalogue_promo"
+OFFER_TEMPLATE = "offer_image"
+
 # Reply words that switch WhatsApp messages off / on again (Meta expects opt-out to be honoured).
 STOP_WORDS = {"stop", "unsubscribe", "stop all", "band", "band karo", "no more"}
 START_WORDS = {"start", "subscribe", "resume"}

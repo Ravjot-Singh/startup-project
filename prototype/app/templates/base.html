@@ -15,7 +15,8 @@
 <a class="skip-link" href="#main">Skip to content</a>
 {% set path = request.url.path %}
 {% set section = 'today' if path == '/' else 'customers' if path.startswith('/customers') or path.startswith('/call-list')
-   else 'messages' if path.startswith('/messages') else 'settings' %}
+   else 'messages' if path.startswith('/messages')
+   else 'promotions' if path.startswith(('/promotions', '/products', '/catalogues', '/leads')) else 'settings' %}
 <header class="topbar">
   <div class="topbar-inner">
     <a class="brand" href="/">{{ config.BUSINESS_NAME }}</a>
@@ -29,6 +30,9 @@
       <a href="/messages" {% if section == 'messages' %}aria-current="page"{% endif %}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg>
         <span>Messages</span></a>
+      <a href="/promotions" {% if section == 'promotions' %}aria-current="page"{% endif %}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10v4h4l6 5V5L7 10z"/><path d="M17 8.5a5 5 0 0 1 0 7M19.5 6a8.5 8.5 0 0 1 0 12"/></svg>
+        <span>Promotions</span></a>
       <a href="/settings" {% if section == 'settings' %}aria-current="page"{% endif %}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9 7 7M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>
         <span>Settings</span></a>

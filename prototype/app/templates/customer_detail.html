@@ -4,7 +4,7 @@
 <p class="small"><a href="/customers">← All customers</a></p>
 <div class="page-head">
   <div>
-    <h1>{{ c.display_name }}</h1>
+    <h1>{{ c.display_name }}{% if c.is_lead %} <span class="badge info">Lead</span>{% endif %}</h1>
     <p class="muted">
       {% if c.phone %}<a href="tel:+{{ c.phone }}">+{{ c.phone }}</a> · <a href="https://wa.me/{{ c.phone }}" target="_blank" rel="noopener">Open WhatsApp</a>{% else %}No WhatsApp number{% endif %}
       {% if c.area %} · {{ c.area }}{% endif %}{% if c.salesman %} · Salesman: {{ c.salesman }}{% endif %}
@@ -240,6 +240,10 @@
     <label class="check"><input type="checkbox" name="whatsapp_opt_in" value="true" {{ 'checked' if c.whatsapp_opt_in }}> Agreed to WhatsApp messages</label>
     <label class="check"><input type="checkbox" name="reminders_paused" value="true" {{ 'checked' if c.reminders_paused }}> Pause reminders</label>
     <label class="check"><input type="checkbox" name="marketing_opt_in" value="true" {{ 'checked' if c.marketing_opt_in }}> Agreed to offers and catalogues</label>
+    <div class="field">
+      <label for="tags">Tags <span class="help">(comma separated, for promotions)</span></label>
+      <input id="tags" name="tags" maxlength="300" value="{{ c.tag_list | join(', ') }}" placeholder="e.g. hotel, wholesale">
+    </div>
     <div class="field">
       <label for="consent_source">How they agreed <span class="help">(needed when ticking offers)</span></label>
       <input id="consent_source" name="consent_source" maxlength="200" value="{{ c.marketing_consent_source or '' }}" placeholder="e.g. asked in person, 18 Nov">

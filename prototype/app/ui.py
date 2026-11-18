@@ -99,6 +99,8 @@ def message_label(msg) -> str:
         return "Sent by you"
     if msg.kind == "one_off":
         return "Promise reminder" if msg.is_promise else "Your scheduled reminder"
+    if msg.kind == "promo":
+        return f"Promotion: {msg.campaign.name}" if msg.campaign is not None else "Promotion"
     if msg.kind == "thanks":
         return "Thank-you"
     if msg.kind == "reorder":

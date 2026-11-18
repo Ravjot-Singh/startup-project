@@ -28,6 +28,7 @@ from app.models import (
     KIND_BILL,
     KIND_MANUAL,
     KIND_ONE_OFF,
+    KIND_PROMO,
     KIND_REMINDER,
     KIND_REORDER,
     KIND_THANKS,
@@ -49,7 +50,7 @@ from app.whatsapp.templates import BILL_TEMPLATE, render
 GRACE_DAYS = 3  # a missed step still goes out up to this many days late
 MAX_ATTEMPTS = 3
 MAX_INVOICES_IN_MESSAGE = 3
-AUTO_KINDS = (KIND_REMINDER, KIND_ONE_OFF, KIND_BILL, KIND_THANKS, KIND_REORDER)  # held back by "Pause all sending" and the sending hours
+AUTO_KINDS = (KIND_REMINDER, KIND_ONE_OFF, KIND_BILL, KIND_THANKS, KIND_REORDER, KIND_PROMO)  # held back by "Pause all sending" and the sending hours
 BILL_SEND_DELAY = timedelta(minutes=30)  # time to upload Busy's PDFs after the outstanding report
 BILL_MAX_AGE_DAYS = 3  # only bills this recent are sent automatically (not years of history on the first upload)
 
@@ -144,7 +145,7 @@ def skip_reason(db: Session, customer: Customer, today: date, kind: str = KIND_R
         return "no phone number"
     if customer.reminders_paused and kind not in (KIND_MANUAL, KIND_BILL, KIND_THANKS):
         return "reminders paused"
-    if kind == KIND_REORDER and not customer.marketing_opt_in:
+    if kind in (KIND_REORDER, KIND_PROMO) and not customer.marketing_opt_in:
         return "hasn't agreed to offers and catalogues"
     if kind == KIND_REMINDER:
         paid_today = db.scalar(
@@ -262,6 +263,10 @@ def send_one(db: Session, provider: WhatsAppProvider, msg: Message, now: datetim
         from app.reminders import followups
 
         return followups.send(db, provider, msg, now)
+    if msg.kind == KIND_PROMO:
+        from app import promotions
+
+        return promotions.send(db, provider, msg, now)
     invoices = unpaid_by_customer(db, [customer.id]).get(customer.id, [])
     content = message_content(customer, invoices, today)
     if content is None:
@@ -374,8 +379,16 @@ def in_send_window(db: Session, now: datetime) -> tuple[bool, int, int]:
 
 
 def send_due(db: Session, provider: WhatsAppProvider, now: datetime, summary: RunSummary) -> RunSummary:
-    """Send everything in the outbox whose time has come (automatic and one-off reminders, retries)."""
+    """Send everything in the outbox whose time has come (automatic and one-off reminders, retries).
+    Promotion messages go out at most `promo_batch_size` per call; the rest wait for the next tick."""
+    from app import promotions
+
+    promo_budget = settings.get_int(db, "promo_batch_size")
     for msg in due_messages(db, now):
+        if msg.kind == KIND_PROMO:
+            if promo_budget <= 0:
+                continue
+            promo_budget -= 1
         outcome = send_one(db, provider, msg, now)
         name = msg.customer.display_name
         if outcome == "sent":
@@ -389,6 +402,7 @@ def send_due(db: Session, provider: WhatsAppProvider, now: datetime, summary: Ru
             summary.details.append(f"Skipped {name}: {msg.error}")
         else:
             summary.cancelled += 1
+    promotions.refresh_statuses(db, now)
     return summary
 
 

@@ -48,15 +48,21 @@ Hi {{1}}, thank you for your continued business with {{2}}. Our latest catalogue
 Sample values: {{1}} Sharma General Store · {{2}} ABC Frozen Foods. Only sent to customers who agreed to offers
 and catalogues. Upload any PDF as the header sample.
 
-## For the next phases (submit now so they're approved in time)
-
-These aren't used yet; the wording can still change before the phase that uses them.
-
-### `catalogue_promo` (Marketing, header: **Document**, the catalogue PDF): Phase 6
+### `catalogue_promo` (Marketing, header: **Document**, a catalogue PDF)
 Hi {{1}}, here is the latest catalogue from {{2}}. {{3}} Reply to this message to order or to ask for prices.
 
-### `offer_image` (Marketing, header: **Image**, a product photo): Phase 6
+Sample values: {{1}} Sharma General Store · {{2}} ABC Frozen Foods · {{3}} New winter range is in.
+{{3}} is the line the owner writes for each promotion.
+
+### `offer_image` (Marketing, header: **Image**, a product or offer photo)
 Hi {{1}}, {{2}} has a new offer for you: {{3}}. Reply to this message to order.
+
+Sample values: {{1}} Sharma General Store · {{2}} ABC Frozen Foods · {{3}} 10% off all paneer this week.
+Upload any product photo as the header sample.
+
+Marketing templates (`reorder_invite`, `catalogue_promo`, `offer_image`) only go to people with recorded
+consent. Meta may limit how many marketing messages one person receives, and promotions go out in small
+batches every few minutes (Settings → Promotions).
 
 ## After approval
 Set `WHATSAPP_PROVIDER=meta`, `META_WA_TOKEN`, `META_WA_PHONE_NUMBER_ID`, `META_APP_SECRET` and

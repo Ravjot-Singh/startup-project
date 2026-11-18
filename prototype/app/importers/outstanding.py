@@ -378,6 +378,7 @@ def import_outstanding(
                 if customer is None:
                     customer = Customer(name=name, code=code)
                     db.add(customer)
+                customer.is_lead = False  # a lead with a bill is now a customer
                 _apply_customer_fields(customer, row, get)
                 db.flush()
 

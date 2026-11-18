@@ -13,7 +13,7 @@ from tests.conftest import csrf_from
 SAMPLE_CSV = Path(__file__).resolve().parent.parent / "sample_data" / "outstanding_sample.csv"
 
 PAGES = ["/", "/customers", "/customers?q=sharma", "/customers?missing=phone", "/import", "/messages", "/call-list",
-         "/call-list?days=0", "/settings", "/rules"]
+         "/call-list?days=0", "/settings", "/rules", "/promotions", "/promotions/new", "/products", "/catalogues", "/leads"]
 
 
 @pytest.fixture
@@ -242,7 +242,7 @@ def test_every_form_has_labels_for_its_inputs(logged_in, data):
         html = logged_in.get(url).text
         labelled = set(re.findall(r'<label[^>]*for="([^"]+)"', html))
         for tag in re.findall(r"<(?:input|select)\b[^>]*>", html):
-            if 'type="hidden"' in tag or 'type="checkbox"' in tag:  # checkboxes are wrapped in their label
+            if 'type="hidden"' in tag or 'type="checkbox"' in tag or 'type="radio"' in tag:  # wrapped in their label
                 continue
             m = re.search(r'id="([^"]+)"', tag)
             assert m and m.group(1) in labelled, f"{url}: unlabelled field {tag}"
@@ -525,3 +525,92 @@ def test_today_warns_when_invites_wait_for_a_catalogue(logged_in, db, data):
     db.commit()
     html = logged_in.get("/").text
     assert "1 reorder invite is waiting for a catalogue" in html and 'href="/settings#after"' in html
+
+
+# ---------- Phase 6: promotions tab ----------
+
+def _png() -> bytes:
+    import io as _io
+
+    from PIL import Image
+
+    buf = _io.BytesIO()
+    Image.new("RGB", (20, 20), (10, 120, 90)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_products_and_catalogue_build(logged_in, db):
+    from app.models import Product
+
+    r = logged_in.post("/products", data={"csrf_token": logged_in.csrf, "name": "Malai Paneer", "category": "Dairy",
+                                          "unit": "1 kg", "price": "320"},
+                       files={"photo": ("paneer.png", _png(), "image/png")}, follow_redirects=True)
+    assert "Saved Malai Paneer." in r.text
+    p = db.query(Product).one()
+    assert logged_in.get(f"/files/{p.photo_file_id}").headers["content-type"] == "image/jpeg"
+    r = logged_in.post("/catalogues/build", data={"csrf_token": logged_in.csrf}, follow_redirects=True)
+    assert "Built Catalogue" in r.text and "Current" in r.text
+    logged_in.post(f"/products/{p.id}/toggle", data={"csrf_token": logged_in.csrf})
+    db.refresh(p)
+    assert p.is_active is False
+
+
+def test_promotion_flow_from_form_to_report(logged_in, db, data):
+    from app import catalogue
+    from app.models import Campaign
+
+    c = data["customer"]
+    c.marketing_opt_in = True
+    db.commit()
+    f = catalogue.add_catalogue(db, "Nov.pdf", b"%PDF-1.4 cat")
+    r = logged_in.post("/promotions", data={"csrf_token": logged_in.csrf, "name": "November", "content": "catalogue",
+                                            "catalogue_file_id": str(f.id), "message_line": "New range is in.",
+                                            "audience": "customers"})
+    assert r.status_code == 303
+    camp = db.query(Campaign).one()
+    page = logged_in.get(f"/promotions/{camp.id}").text
+    assert "Send now to 1 person" in page and "about <strong>₹0.80</strong>" in page and "New range is in." in page
+    r = logged_in.post(f"/promotions/{camp.id}/send", data={"csrf_token": logged_in.csrf}, follow_redirects=True)
+    assert "Sending to 1 person." in r.text
+    assert "1 still to go" in r.text
+    assert "November" in logged_in.get("/promotions").text
+
+
+def test_promotion_form_errors_keep_values(logged_in):
+    r = logged_in.post("/promotions", data={"csrf_token": logged_in.csrf, "name": "Offer", "content": "offer",
+                                            "message_line": "10% off", "audience": "customers"})
+    assert r.status_code == 400 and "Add a photo" in r.text and 'value="10% off"' in r.text
+
+
+def test_leads_pages(logged_in, db):
+    from app.models import Customer
+
+    r = logged_in.post("/leads", data={"csrf_token": logged_in.csrf, "name": "Hotel Blue", "phone": "9811100011",
+                                       "tags": "hotel", "consent_source": "trade fair"}, follow_redirects=True)
+    assert "Added Hotel Blue." in r.text and "trade fair" in r.text
+    r = logged_in.post("/leads/import", data={"csrf_token": logged_in.csrf, "consent_source": "signed up"},
+                       files={"file": ("l.csv", b"Name,Mobile\nCafe One,9811100001\nBad,1\n", "text/csv")})
+    assert "Added 1, updated 0." in r.text and "Row 3" in r.text
+    assert db.query(Customer).filter_by(is_lead=True).count() == 2
+    assert "Hotel Blue" not in logged_in.get("/customers").text  # leads aren't listed with customers
+
+
+def test_promotion_settings(logged_in, db):
+    from app import settings
+
+    logged_in.post("/settings/promotions", data={"csrf_token": logged_in.csrf, "cost": "0.95", "batch": "25"})
+    assert settings.get(db, "marketing_message_cost") == "0.95" and settings.get_int(db, "promo_batch_size") == 25
+    r = logged_in.post("/settings/promotions", data={"csrf_token": logged_in.csrf, "cost": "abc", "batch": "25"}, follow_redirects=True)
+    assert "Enter a cost between" in r.text
+
+
+def test_files_need_login_and_bill_pdfs_are_not_served_there(client, logged_in, db, data):
+    from app import catalogue
+
+    f = catalogue.add_catalogue(db, "x.pdf", b"%PDF-1.4")
+    from app.bills import attach_busy_pdfs
+
+    attach_busy_pdfs(db, [("INV-1.pdf", b"%PDF-1.4 bill")])
+    db.refresh(data["invoice"])
+    assert logged_in.get(f"/files/{f.id}").status_code == 200
+    assert logged_in.get(f"/files/{data['invoice'].bill_file_id}").status_code == 404

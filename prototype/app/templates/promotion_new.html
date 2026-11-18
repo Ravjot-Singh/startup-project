@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}New promotion{% endblock %}
+{% block content %}
+<p class="small"><a href="/promotions">← Promotions</a></p>
+<div class="page-head"><h1>New promotion</h1></div>
+{% if error %}<div class="alert error" role="alert">{{ error }}</div>{% endif %}
+
+<form method="post" action="/promotions" enctype="multipart/form-data" class="stack">{{ csrf_input(request) }}
+  <section class="card" aria-labelledby="what">
+    <h2 id="what">What to send</h2>
+    <div class="field">
+      <label for="name">Name <span class="help">(only you see this)</span></label>
+      <input id="name" name="name" maxlength="200" required value="{{ values.get('name', '') }}" placeholder="e.g. Winter range, November">
+    </div>
+    <fieldset class="split section">
+      <legend>Send</legend>
+      <label class="check"><input type="radio" name="content" value="catalogue" {{ 'checked' if values.get('content', 'catalogue') == 'catalogue' }}> A catalogue (PDF)</label>
+      <label class="check"><input type="radio" name="content" value="offer" {{ 'checked' if values.get('content') == 'offer' }}> A photo with an offer</label>
+    </fieldset>
+    <div class="form-grid section">
+      <div class="field">
+        <label for="catalogue_file_id">Catalogue <span class="help">(for a catalogue)</span></label>
+        <select id="catalogue_file_id" name="catalogue_file_id">
+          {% for f in catalogues %}<option value="{{ f.id }}" {{ 'selected' if values.get('catalogue_file_id') == f.id|string or (not values and current and f.id == current.id) }}>{{ f.filename }}{{ ' (current)' if current and f.id == current.id }}</option>{% else %}<option value="">No catalogues yet</option>{% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="image">Offer photo <span class="help">(for an offer: upload…)</span></label>
+        <input id="image" name="image" type="file" accept="image/jpeg,image/png">
+      </div>
+      <div class="field">
+        <label for="product_photo_id">…or use a product's photo</label>
+        <select id="product_photo_id" name="product_photo_id">
+          <option value="">None</option>
+          {% for p in photos %}<option value="{{ p.photo_file_id }}" {{ 'selected' if values.get('product_photo_id') == p.photo_file_id|string }}>{{ p.name }}</option>{% endfor %}
+        </select>
+      </div>
+    </div>
+    <div class="field section">
+      <label for="message_line">Your line in the message <span class="help">(the offer, or a short note with a catalogue)</span></label>
+      <input id="message_line" name="message_line" maxlength="300" value="{{ values.get('message_line', '') }}" placeholder="e.g. 10% off all paneer this week">
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="who">
+    <h2 id="who">Who gets it</h2>
+    <p class="muted small">Only people who agreed to offers get it. You'll see the exact number before anything is sent.</p>
+    <div class="form-grid">
+      <div class="field">
+        <label for="audience">Send to</label>
+        <select id="audience" name="audience">{% for k, label in audiences.items() %}<option value="{{ k }}" {{ 'selected' if values.get('audience', 'customers') == k }}>{{ label }}</option>{% endfor %}</select>
+      </div>
+      <div class="field">
+        <label for="area">Area</label>
+        <select id="area" name="area"><option value="">Any area</option>{% for a in areas %}<option {{ 'selected' if values.get('area') == a }}>{{ a }}</option>{% endfor %}</select>
+      </div>
+      <div class="field">
+        <label for="salesman">Salesman</label>
+        <select id="salesman" name="salesman"><option value="">Any salesman</option>{% for s in salesmen %}<option {{ 'selected' if values.get('salesman') == s }}>{{ s }}</option>{% endfor %}</select>
+      </div>
+      <div class="field">
+        <label for="tag">Tag</label>
+        <select id="tag" name="tag"><option value="">Any tag</option>{% for t in tags %}<option {{ 'selected' if values.get('tag') == t }}>{{ t }}</option>{% endfor %}</select>
+      </div>
+    </div>
+  </section>
+
+  <div><button>Preview</button></div>
+</form>
+{% endblock %}

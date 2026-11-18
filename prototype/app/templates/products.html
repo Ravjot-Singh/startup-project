@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Products{% endblock %}
+{% block content %}
+<p class="small"><a href="/promotions">← Promotions</a></p>
+<div class="page-head">
+  <div>
+    <h1>Products</h1>
+    <p class="muted">Products here make up the catalogue the app builds for you.</p>
+  </div>
+  <a class="btn secondary" href="/catalogues">Catalogues</a>
+</div>
+
+{% macro product_fields(prefix, p=None) %}
+  <div class="field">
+    <label for="{{ prefix }}-name">Name</label>
+    <input id="{{ prefix }}-name" name="name" maxlength="200" required value="{{ p.name if p else '' }}" placeholder="e.g. Malai Paneer">
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-category">Category</label>
+    <input id="{{ prefix }}-category" name="category" maxlength="100" list="categories" value="{{ p.category or '' if p else '' }}" placeholder="e.g. Dairy">
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-unit">Pack size</label>
+    <input id="{{ prefix }}-unit" name="unit" maxlength="100" value="{{ p.unit or '' if p else '' }}" placeholder="e.g. 1 kg pack">
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-price">Price (₹) <span class="help">(optional)</span></label>
+    <input id="{{ prefix }}-price" name="price" inputmode="decimal" value="{{ p.price if p and p.price is not none else '' }}">
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-photo">{{ 'Replace photo' if p and p.photo_file_id else 'Photo' }} <span class="help">(JPG or PNG)</span></label>
+    <input id="{{ prefix }}-photo" name="photo" type="file" accept="image/jpeg,image/png">
+  </div>
+{% endmacro %}
+<datalist id="categories">{% for c in categories %}<option value="{{ c }}">{% endfor %}</datalist>
+
+<section class="card" aria-labelledby="add">
+  <h2 id="add">Add a product</h2>
+  <form method="post" action="/products" enctype="multipart/form-data" class="form-grid">{{ csrf_input(request) }}
+    {{ product_fields('new') }}
+    <div class="field"><button>Add product</button></div>
+  </form>
+</section>
+
+<section class="card section" aria-labelledby="all">
+  <h2 id="all">All products</h2>
+  {% if products %}
+  <ul class="list">
+    {% for p in products %}
+    <li style="flex-wrap: wrap">
+      {% if p.photo_file_id %}<img src="/files/{{ p.photo_file_id }}" alt="" width="56" height="56" style="object-fit: cover; border-radius: 8px">{% endif %}
+      <div class="grow">
+        <div class="title">{{ p.name }}</div>
+        <div class="muted small">{{ p.category or 'No category' }}{% if p.unit %} · {{ p.unit }}{% endif %}{% if p.price is not none %} · ₹{{ p.price | inr }}{% endif %}</div>
+      </div>
+      {% if not p.is_active %}<span class="badge skipped">Not in catalogue</span>{% endif %}
+      <form method="post" action="/products/{{ p.id }}/toggle" class="end">{{ csrf_input(request) }}
+        <button class="quiet" aria-label="{{ 'Remove from catalogue' if p.is_active else 'Put back in catalogue' }}: {{ p.name }}">{{ 'Remove' if p.is_active else 'Put back' }}</button>
+      </form>
+      <details style="flex-basis: 100%">
+        <summary class="small">Edit</summary>
+        <form method="post" action="/products/{{ p.id }}" enctype="multipart/form-data" class="form-grid">{{ csrf_input(request) }}
+          {{ product_fields('p' ~ p.id, p) }}
+          <div class="field"><button class="secondary">Save</button></div>
+        </form>
+      </details>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}<p class="empty">No products yet.</p>{% endif %}
+</section>
+{% endblock %}
