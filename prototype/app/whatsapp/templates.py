@@ -40,6 +40,15 @@ TEMPLATES: dict[str, str] = {
     ),
 }
 
+# Bill messages carry the bill PDF as a DOCUMENT header (create the template with header type "Document").
+#   {{1}} customer, {{2}} business, {{3}} bill number, {{4}} bill date, {{5}} bill amount,
+#   {{6}} balance still due on it, {{7}} due date, {{8}} UPI payment details
+TEMPLATES["bill_document"] = (
+    "Hi {{1}}, thank you for your business with {{2}}. Your bill {{3}} dated {{4}} for Rs. {{5}} is attached. "
+    "Balance due: Rs. {{6}} by {{7}}. Pay via UPI: {{8}}."
+)
+BILL_TEMPLATE = "bill_document"
+
 # Reply words that switch WhatsApp messages off / on again (Meta expects opt-out to be honoured).
 STOP_WORDS = {"stop", "unsubscribe", "stop all", "band", "band karo", "no more"}
 START_WORDS = {"start", "subscribe", "resume"}

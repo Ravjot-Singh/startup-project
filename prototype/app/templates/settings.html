@@ -35,6 +35,19 @@
   </details>
 </section>
 
+<section class="card section" aria-labelledby="billsend">
+  <div class="card-head">
+    <h2 id="billsend">Bills on WhatsApp</h2>
+    {% if auto_bills %}<span class="badge ok">Automatic</span>{% else %}<span class="badge skipped">Off</span>{% endif %}
+  </div>
+  <p>{% if auto_bills %}When a Busy upload has a new bill (from the last 3 days), its PDF goes to the customer about 30 minutes later.
+     Upload Busy's bill PDFs before then to send those; otherwise a bill summary is sent.{% else %}New bills are not sent automatically.
+     You can still send any bill from the customer's page.{% endif %}</p>
+  <form method="post" action="/settings/bills">{{ csrf_input(request) }}
+    <button class="secondary">{{ 'Stop sending new bills automatically' if auto_bills else 'Send new bills automatically' }}</button>
+  </form>
+</section>
+
 <section class="card section" aria-labelledby="schedule">
   <div class="card-head">
     <h2 id="schedule">Reminder schedule</h2>

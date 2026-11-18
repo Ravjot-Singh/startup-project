@@ -14,21 +14,23 @@ then, it is cancelled. A failed send is retried on the next ticks, up to MAX_ATT
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from urllib.parse import quote
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
-from app import clock, config, settings, ui
+from app import bills, clock, config, settings, ui
 from app.models import (
     CANCELLED,
     FAILED,
+    KIND_BILL,
     KIND_MANUAL,
     KIND_ONE_OFF,
     KIND_REMINDER,
     OPENING,
+    PAID,
     QUEUED,
     SKIPPED,
     UNPAID_STATUSES,
@@ -39,13 +41,15 @@ from app.models import (
     ReminderRule,
     ReminderStep,
 )
-from app.whatsapp.provider import WhatsAppProvider
-from app.whatsapp.templates import render
+from app.whatsapp.provider import MediaFile, WhatsAppProvider
+from app.whatsapp.templates import BILL_TEMPLATE, render
 
 GRACE_DAYS = 3  # a missed step still goes out up to this many days late
 MAX_ATTEMPTS = 3
 MAX_INVOICES_IN_MESSAGE = 3
-AUTO_KINDS = (KIND_REMINDER, KIND_ONE_OFF)  # held back by "Pause all sending" and the sending hours
+AUTO_KINDS = (KIND_REMINDER, KIND_ONE_OFF, KIND_BILL)  # held back by "Pause all sending" and the sending hours
+BILL_SEND_DELAY = timedelta(minutes=30)  # time to upload Busy's PDFs after the outstanding report
+BILL_MAX_AGE_DAYS = 3  # only bills this recent are sent automatically (not years of history on the first upload)
 
 # Tone when no schedule step applies (no active steps at all)
 FALLBACK_TEMPLATES = ((1, "payment_overdue"), (0, "payment_due_today"), (-10**6, "payment_reminder_upcoming"))
@@ -136,7 +140,7 @@ def skip_reason(db: Session, customer: Customer, today: date, kind: str = KIND_R
         return "not opted in to WhatsApp"
     if not customer.phone:
         return "no phone number"
-    if customer.reminders_paused and kind != KIND_MANUAL:
+    if customer.reminders_paused and kind not in (KIND_MANUAL, KIND_BILL):
         return "reminders paused"
     if kind == KIND_REMINDER:
         paid_today = db.scalar(
@@ -248,6 +252,8 @@ def send_one(db: Session, provider: WhatsAppProvider, msg: Message, now: datetim
         msg.status, msg.error = SKIPPED, reason
         db.commit()
         return "skipped"
+    if msg.kind == KIND_BILL:
+        return _send_bill(db, provider, msg, now)
     invoices = unpaid_by_customer(db, [customer.id]).get(customer.id, [])
     content = message_content(customer, invoices, today)
     if content is None:
@@ -263,6 +269,10 @@ def send_one(db: Session, provider: WhatsAppProvider, msg: Message, now: datetim
     msg.message_preview = render(msg.template_name, content.params)
 
     result = provider.send_template(customer.phone, msg.template_name, content.params)
+    return _record_result(db, msg, result, now)
+
+
+def _record_result(db: Session, msg: Message, result, now: datetime) -> str:
     msg.attempts = (msg.attempts or 0) + 1
     if result.ok:
         msg.status, msg.provider_msg_id, msg.error, msg.sent_at = result.status, result.message_id, None, now
@@ -273,6 +283,72 @@ def send_one(db: Session, provider: WhatsAppProvider, msg: Message, now: datetim
         outcome = "failed" if msg.status == FAILED else "retrying"
     db.commit()
     return outcome
+
+
+def bill_params(inv: Invoice) -> list[str]:
+    balance = max(inv.balance, Decimal(0))
+    return [
+        inv.customer.display_name,
+        config.BUSINESS_NAME,
+        inv.invoice_no,
+        inv.invoice_date.strftime("%d-%b-%Y"),
+        fmt_amount(inv.amount),
+        fmt_amount(balance),
+        inv.due_date.strftime("%d-%b-%Y"),
+        upi_link(balance, f"Bill {inv.invoice_no}") if balance > 0 else "nothing due, thank you",
+    ]
+
+
+def _send_bill(db: Session, provider: WhatsAppProvider, msg: Message, now: datetime) -> str:
+    inv = msg.invoice
+    if inv is None:
+        msg.status, msg.error = CANCELLED, "Bill no longer exists"
+        db.commit()
+        return "cancelled"
+    if msg.idempotency_key and inv.status == PAID:  # automatic bill message, but already paid: not needed
+        msg.status, msg.error = CANCELLED, "Already paid"
+        db.commit()
+        return "cancelled"
+    pdf = bills.bill_pdf(db, inv)
+    params = bill_params(inv)
+    msg.template_name = BILL_TEMPLATE
+    msg.invoice_nos = inv.invoice_no
+    msg.amount_due = max(inv.balance, Decimal(0))
+    msg.message_preview = render(BILL_TEMPLATE, params) + f"\n[Attached: {pdf.filename}" + (" from Busy]" if pdf.from_busy else ", bill summary]")
+    result = provider.send_template(msg.customer.phone, BILL_TEMPLATE, params,
+                                    media=MediaFile(data=pdf.data, mime=bills.PDF_MIME, filename=pdf.filename))
+    return _record_result(db, msg, result, now)
+
+
+def queue_new_bills(db: Session, invoices: list[Invoice], now: datetime | None = None) -> list[Message]:
+    """After an upload from Busy: queue each new, recent bill's PDF to its customer (once per bill)."""
+    now = now or clock.now()
+    if not settings.get_bool(db, "send_bills_automatically"):
+        return []
+    queued = []
+    for inv in invoices:
+        if (now.date() - inv.invoice_date).days > BILL_MAX_AGE_DAYS or inv.status == PAID:
+            continue
+        key = f"bill:{inv.id}"
+        if db.scalar(select(Message.id).where(Message.idempotency_key == key)):
+            continue
+        msg = Message(customer_id=inv.customer_id, kind=KIND_BILL, invoice_id=inv.id, run_date=now.date(),
+                      scheduled_for=now + BILL_SEND_DELAY, status=QUEUED, idempotency_key=key)
+        db.add(msg)
+        queued.append(msg)
+    db.commit()
+    return queued
+
+
+def send_bill_now(db: Session, provider: WhatsAppProvider, inv: Invoice, now: datetime | None = None) -> Message:
+    """The owner pressed "Send bill": goes out straight away, with the Busy PDF if uploaded."""
+    now = now or clock.now()
+    msg = Message(customer_id=inv.customer_id, kind=KIND_BILL, invoice_id=inv.id, run_date=now.date(),
+                  scheduled_for=now, status=QUEUED)
+    db.add(msg)
+    db.flush()
+    send_one(db, provider, msg, now)
+    return msg
 
 
 def due_messages(db: Session, now: datetime, kinds=AUTO_KINDS) -> list[Message]:

@@ -143,7 +143,12 @@ def _outgoing(db: Session, status: SendingStatus, now: datetime, balances: dict[
     seen_ids = set()
     for m in todays:
         seen_ids.add(m.id)
-        amount = m.amount_due if m.is_sent or m.status in (FAILED,) else balances.get(m.customer_id, Decimal(0))
+        if m.is_sent or m.status == FAILED:
+            amount = m.amount_due
+        elif m.kind == "bill" and m.invoice is not None:
+            amount = max(m.invoice.balance, Decimal(0))
+        else:
+            amount = balances.get(m.customer_id, Decimal(0))
         if m.is_sent:
             items.append(OutgoingItem(m.customer, _label(m), amount, "sent", "Sent (test mode)" if m.status == "dryrun" else "Sent"))
         elif m.status == FAILED:

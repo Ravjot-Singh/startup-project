@@ -423,3 +423,49 @@ def test_removing_a_used_step_keeps_message_history(logged_in, db, data):
     m = db.query(Message).one()
     assert m.rule_id is None
     assert logged_in.get("/messages").status_code == 200
+
+
+# ---------- Phase 4: bill PDFs ----------
+
+def test_view_bill_pdf(logged_in, data):
+    r = logged_in.get(f"/invoices/{data['invoice'].id}/pdf")
+    assert r.status_code == 200 and r.headers["content-type"] == "application/pdf"
+    assert r.content.startswith(b"%PDF") and 'filename="Bill-INV-1.pdf"' in r.headers["content-disposition"]
+
+
+def test_bill_pdf_needs_login(client, data):
+    assert client.get(f"/invoices/{data['invoice'].id}/pdf").status_code == 303
+
+
+def test_send_bill_button(logged_in, db, data):
+    from app.models import Message
+
+    inv = data["invoice"]
+    page = logged_in.get(f"/customers/{data['customer'].id}").text
+    assert f'action="/invoices/{inv.id}/send"' in page and "View PDF (summary)" in page
+    r = logged_in.post(f"/invoices/{inv.id}/send", data={"csrf_token": logged_in.csrf}, follow_redirects=True)
+    assert "Bill INV-1 sent to Sharma Store." in r.text
+    m = db.query(Message).one()
+    assert m.kind == "bill" and m.invoice_id == inv.id
+    assert "Bill INV-1" in logged_in.get("/messages").text
+
+
+def test_upload_busy_pdfs_page(logged_in, db, data):
+    files = [("files", ("INV-1.pdf", b"%PDF-1.4 busy", "application/pdf")),
+             ("files", ("INV-404.pdf", b"%PDF-1.4 other", "application/pdf"))]
+    r = logged_in.post("/import/bill-pdfs", data={"csrf_token": logged_in.csrf}, files=files)
+    assert r.status_code == 200
+    assert "Attached 1 PDF." in r.text and "INV-404.pdf: no bill with that number" in r.text
+    db.refresh(data["invoice"])
+    assert data["invoice"].bill_file_id is not None
+    assert "View PDF (summary)" not in logged_in.get(f"/customers/{data['customer'].id}").text
+    assert logged_in.get(f"/invoices/{data['invoice'].id}/pdf").content == b"%PDF-1.4 busy"
+
+
+def test_switch_automatic_bills_off_and_on(logged_in, db):
+    from app import settings
+
+    r = logged_in.post("/settings/bills", data={"csrf_token": logged_in.csrf}, follow_redirects=True)
+    assert settings.get_bool(db, "send_bills_automatically") is False and "won't be sent automatically" in r.text.replace("&#39;", "'")
+    logged_in.post("/settings/bills", data={"csrf_token": logged_in.csrf})
+    assert settings.get_bool(db, "send_bills_automatically") is True

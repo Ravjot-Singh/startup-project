@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -82,6 +83,8 @@ class Invoice(Base):
     busy_paid: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     status: Mapped[str] = mapped_column(String(20), default=OPEN, index=True)
     source_ref: Mapped[str | None] = mapped_column(String(100))  # import batch / sync id
+    # The bill PDF exported from Busy, if the owner uploaded it (otherwise a summary PDF is generated)
+    bill_file_id: Mapped[int | None] = mapped_column(ForeignKey("stored_files.id"))
 
     customer: Mapped[Customer] = relationship(back_populates="invoices")
     payments: Mapped[list["Payment"]] = relationship(back_populates="invoice")
@@ -185,6 +188,7 @@ class ReminderRule(Base):
 KIND_REMINDER = "reminder"  # automatic, from the schedule
 KIND_ONE_OFF = "one_off"    # the owner asked for a reminder on a date and time
 KIND_MANUAL = "manual"      # the owner pressed "Send reminder now"
+KIND_BILL = "bill"          # a bill PDF (new bill, or the owner pressed "Send bill")
 
 # Message statuses
 QUEUED = "queued"        # waiting to go out (scheduled_for may be later), or waiting to retry
@@ -203,6 +207,7 @@ class Message(Base):
     customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id"), index=True)
     kind: Mapped[str] = mapped_column(String(20), default=KIND_REMINDER, index=True)
     rule_id: Mapped[int | None] = mapped_column(ForeignKey("reminder_rules.id"))
+    invoice_id: Mapped[int | None] = mapped_column(ForeignKey("invoices.id"))  # for bill messages
     template_name: Mapped[str | None] = mapped_column(String(100))
     run_date: Mapped[date] = mapped_column(Date, index=True)  # the day it is for
     scheduled_for: Mapped[datetime | None] = mapped_column(DateTime, index=True)  # not before this time
@@ -222,6 +227,7 @@ class Message(Base):
 
     customer: Mapped[Customer] = relationship()
     rule: Mapped[ReminderRule | None] = relationship()
+    invoice: Mapped[Invoice | None] = relationship()
 
     @property
     def is_sent(self) -> bool:
@@ -276,3 +282,22 @@ class AppSetting(Base):
     key: Mapped[str] = mapped_column(String(100), primary_key=True)
     value: Mapped[str] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+
+class StoredFile(Base):
+    """A file kept in the database (bill PDFs from Busy, later catalogues and photos).
+
+    The free host wipes its disk on every restart, so files live here; read and write them through
+    app.storage, which can later be pointed at cloud storage without touching the rest of the app.
+    """
+
+    __tablename__ = "stored_files"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(30), index=True)  # e.g. "bill_pdf"
+    filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(100))
+    size: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64), index=True)
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)

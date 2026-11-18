@@ -61,8 +61,13 @@ Free-tier staging (Render + Neon + cron-job.org): see [docs/deploy-staging.md](d
    (`messages` table) and is written when it is sent, so it quotes the latest balance; a failed send is
    retried on the next ticks, up to 3 tries. Opted-out, paused, numberless and paid-today customers are skipped;
    disputed bills are left out. A reply of STOP switches a customer's messages off (START turns them back on).
-4. **Call list** shows customers 15+ days overdue for salesmen to follow up.
-5. **Payments** (`app/payments.py`): the owner records money received on the customer page and chooses which
+4. **Bills on WhatsApp** (`app/bills.py`): each bill can be sent as a PDF from the customer's page. After a Busy
+   upload, new bills from the last 3 days are sent automatically about 30 minutes later (switch on Settings).
+   The PDF is the bill exported from Busy if the owner uploaded it on the Import page (matched by the bill
+   number in the file name), otherwise a one-page bill summary with a UPI QR code. Files are kept in the
+   database (`app/storage.py`) because the free host's disk is wiped on restart.
+5. **Call list** shows customers 15+ days overdue for salesmen to follow up.
+6. **Payments** (`app/payments.py`): the owner records money received on the customer page and chooses which
    bills it pays; anything left over is kept as credit and can be put against bills later. Typed payments can
    be undone. Busy uploads never lower a payment: if Busy shows more paid, the difference is added; if it
    shows less, the app keeps its own figure and marks the bill "Busy not updated yet". Bills are identified
@@ -74,8 +79,8 @@ Free-tier staging (Render + Neon + cron-job.org): see [docs/deploy-staging.md](d
 `WHATSAPP_PROVIDER=dryrun` (default) only logs messages. To send for real:
 
 1. Create a Meta Business account and a WhatsApp Business app at developers.facebook.com, add a phone number.
-2. In WhatsApp Manager create the 5 templates from `app/whatsapp/templates.py` (category **Utility**, same
-   names and text) and wait for approval.
+2. In WhatsApp Manager create the templates listed in [docs/whatsapp-templates.md](docs/whatsapp-templates.md)
+   (same names, text, category and header type) and wait for approval.
 3. Set `WHATSAPP_PROVIDER=meta`, `META_WA_TOKEN` (permanent system-user token), `META_WA_PHONE_NUMBER_ID`.
 4. Deploy on a public HTTPS URL and set the webhook to `https://<domain>/webhooks/whatsapp` with
    `META_WA_VERIFY_TOKEN`; subscribe to `messages`. Also set `META_APP_SECRET` (App settings → Basic) so the

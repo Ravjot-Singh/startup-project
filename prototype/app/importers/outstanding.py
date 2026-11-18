@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from app import clock
 from app.models import UNPAID_STATUSES, Customer, ImportBatch, Invoice, fiscal_year_of
 from app.payments import apply_busy_paid, outstanding, record_fully_paid
+from app.reminders.engine import queue_new_bills
 
 COLUMN_ALIASES: dict[str, list[str]] = {
     "invoice_no": [
@@ -79,6 +80,8 @@ class ImportResult:
     errors: list[str] = field(default_factory=list)
     # Bills where payments recorded in the app are not in Busy yet (Busy shows less paid).
     busy_behind: list[str] = field(default_factory=list)
+    # Bill PDFs queued to go to customers on WhatsApp (new, recent bills)
+    bills_queued: int = 0
 
 
 # ---------- parsing helpers ----------
@@ -330,6 +333,7 @@ def import_outstanding(
     errors: list[str] = []
     seen: set[tuple[str, str]] = set()  # (bill no, financial year)
     behind: list[str] = []
+    new_bills: list[Invoice] = []
     before = outstanding(db)  # to spot customers who become fully paid with this upload
     current_party: str | None = None
 
@@ -401,6 +405,8 @@ def import_outstanding(
                     inv.refresh_status()
                 if inv.busy_behind:
                     behind.append(invoice_no)
+                if first_seen:
+                    new_bills.append(inv)
             seen.add((invoice_no, fy))
             batch.rows_ok += 1
         except (ImportError_, ValueError) as e:
@@ -420,4 +426,5 @@ def import_outstanding(
 
     batch.errors = "\n".join(errors) if errors else None
     db.commit()
-    return ImportResult(batch=batch, column_map=cmap, errors=errors, busy_behind=behind)
+    queued = queue_new_bills(db, new_bills, datetime.combine(today, clock.now().time()))
+    return ImportResult(batch=batch, column_map=cmap, errors=errors, busy_behind=behind, bills_queued=len(queued))

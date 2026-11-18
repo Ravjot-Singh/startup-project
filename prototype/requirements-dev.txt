@@ -1,3 +1,5 @@
-# Extra tools for the accessibility test (tests/test_a11y.py). Not needed to run the app.
+# Extra tools for the tests (accessibility check, PDF reading, WhatsApp API mocks). Not needed to run the app.
 -r requirements.txt
 playwright==1.49.1
+pypdf==5.1.0
+respx==0.22.0

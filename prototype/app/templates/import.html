@@ -12,6 +12,8 @@
   {% else %}
   <strong>Updated {{ result.batch.rows_ok }} bills.</strong>
   {% if result.batch.marked_paid %}{{ result.batch.marked_paid }} older bill{{ 's' if result.batch.marked_paid != 1 }} marked paid.{% endif %}
+  {% if result.bills_queued %}{{ result.bills_queued }} new bill{{ 's go' if result.bills_queued != 1 else ' goes' }} to customers on WhatsApp in about 30 minutes:
+    upload Busy's PDFs below before then to send those.{% endif %}
   {% endif %}
   {% if result.errors %}{{ result.errors | length }} row{{ 's' if result.errors | length != 1 }} could not be read.{% endif %}
   {% if result.busy_behind %}<p class="small">Payments you recorded here aren't in Busy yet for bill{{ 's' if result.busy_behind | length != 1 }}
@@ -45,6 +47,27 @@
     <label class="check"><input type="checkbox" name="full_report" value="true" checked>
       This is the full list. Mark bills that aren't in it as paid.</label>
     <button>Upload bills</button>
+  </form>
+</section>
+
+<section class="card section" aria-labelledby="pdfs">
+  <h2 id="pdfs">Bill PDFs from Busy (optional)</h2>
+  {% if pdfs %}
+  <div class="alert {{ 'warn' if pdfs.unmatched else 'ok' }}" role="status">
+    <strong>Attached {{ pdfs.matched | length }} PDF{{ 's' if pdfs.matched | length != 1 }}.</strong>
+    {% if pdfs.unmatched %}{{ pdfs.unmatched | length }} couldn't be matched to a bill:
+    <ul class="small">{% for name, why in pdfs.unmatched %}<li>{{ name }}: {{ why }}</li>{% endfor %}</ul>
+    Rename them to include the bill number (e.g. INV1001.pdf) and upload again.{% endif %}
+  </div>
+  {% endif %}
+  <p class="muted small">Save the bills from Busy as PDFs with the bill number in the file name (e.g. <code>INV1001.pdf</code>), then select
+    them all at once. They're sent instead of the app's bill summary.</p>
+  <form method="post" action="/import/bill-pdfs" enctype="multipart/form-data" class="stack">{{ csrf_input(request) }}
+    <div class="field">
+      <label for="pdf-files">Bill PDFs</label>
+      <input id="pdf-files" type="file" name="files" accept=".pdf,application/pdf" multiple required>
+    </div>
+    <button class="secondary">Upload PDFs</button>
   </form>
 </section>
 

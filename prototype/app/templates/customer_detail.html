@@ -154,6 +154,14 @@
           {% if unpaid %} · <span class="{{ 'overdue' if od > 0 }}">{{ od | overdue_text }}</span>{% endif %}
         </div>
         {% if inv.busy_behind %}<div class="small"><span class="badge warn">Busy not updated yet</span> Busy shows ₹{{ inv.busy_paid | inr }} paid; you recorded ₹{{ inv.amount_paid | inr }}.</div>{% endif %}
+        <div class="actions small">
+          <a href="/invoices/{{ inv.id }}/pdf" target="_blank" rel="noopener">View PDF{{ '' if inv.bill_file_id else ' (summary)' }}</a>
+          {% if c.phone and c.whatsapp_opt_in %}
+          <form method="post" action="/invoices/{{ inv.id }}/send">{{ csrf_input(request) }}
+            <button class="quiet" aria-label="Send bill {{ inv.invoice_no }} on WhatsApp">Send bill</button>
+          </form>
+          {% endif %}
+        </div>
       </div>
       <div class="end">
         {% if inv.status != 'paid' %}<div class="money">₹{{ inv.balance | inr }} left</div>{% endif %}

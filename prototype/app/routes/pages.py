@@ -6,12 +6,12 @@ from urllib.parse import quote_plus
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from app import clock, config, payments, settings, ui
+from app import bills, clock, config, payments, settings, ui
 from app.dashboard import build_today, sending_status
 from app.db import get_db
 from app.importers.outstanding import ImportError_, import_customers, import_outstanding, normalize_phone
@@ -330,6 +330,26 @@ def toggle_customer_pause(cid: int, request: Request, db: Session = Depends(get_
     return redirect(f"/customers/{cid}")
 
 
+@router.get("/invoices/{iid}/pdf")
+def bill_pdf_view(iid: int, db: Session = Depends(get_db), user: str = Depends(require_login)):
+    inv = db.get(Invoice, iid) or _404()
+    pdf = bills.bill_pdf(db, inv)
+    return Response(pdf.data, media_type=bills.PDF_MIME, headers={"Content-Disposition": f'inline; filename="{pdf.filename}"'})
+
+
+@router.post("/invoices/{iid}/send")
+def send_bill(iid: int, request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
+    inv = db.get(Invoice, iid) or _404()
+    msg = engine.send_bill_now(db, get_provider(), inv)
+    if msg.is_sent:
+        flash(request, f"Bill {inv.invoice_no} sent to {inv.customer.display_name}.")
+    elif msg.status == QUEUED:
+        flash(request, f"Couldn't send bill {inv.invoice_no} just now ({msg.error}). It will be tried again in a few minutes.", "warn")
+    else:
+        flash(request, f"Bill {inv.invoice_no} not sent: {msg.error}.", "warn")
+    return redirect(f"/customers/{inv.customer_id}")
+
+
 @router.post("/invoices/{iid}/dispute")
 def toggle_dispute(iid: int, request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
     inv = db.get(Invoice, iid) or _404()
@@ -384,7 +404,8 @@ def reply_handled(mid: int, request: Request, next: str = Form(""), db: Session 
 def settings_page(request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
     rules = db.scalars(select(ReminderRule).order_by(ReminderRule.offset_days)).all()
     last_import = db.scalar(select(ImportBatch).order_by(ImportBatch.id.desc()).limit(1))
-    return render(request, "settings.html", {"status": sending_status(db), "rules": rules, "last_import": last_import, "user": user})
+    return render(request, "settings.html", {"status": sending_status(db), "rules": rules, "last_import": last_import, "user": user,
+                                             "auto_bills": settings.get_bool(db, "send_bills_automatically")})
 
 
 @router.post("/settings/pause")
@@ -393,6 +414,14 @@ def toggle_pause(request: Request, db: Session = Depends(get_db), user: str = De
     settings.set_value(db, "sending_paused", paused)
     flash(request, "Automatic sending paused. Nothing goes out until you resume." if paused
           else "Automatic sending resumed.", "warn" if paused else "ok")
+    return redirect("/settings")
+
+
+@router.post("/settings/bills")
+def toggle_auto_bills(request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
+    on = not settings.get_bool(db, "send_bills_automatically")
+    settings.set_value(db, "send_bills_automatically", on)
+    flash(request, "New bills will be sent automatically." if on else "New bills won't be sent automatically. Use “Send bill” on a customer's page.")
     return redirect("/settings")
 
 
@@ -508,7 +537,7 @@ def _import_ctx(db: Session) -> dict:
 
 @router.get("/import", response_class=HTMLResponse)
 def import_page(request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
-    return render(request, "import.html", _import_ctx(db) | {"result": None, "error": None, "kind": None})
+    return render(request, "import.html", _import_ctx(db) | {"result": None, "error": None, "kind": None, "pdfs": None})
 
 
 ALLOWED_EXTENSIONS = (".csv", ".xlsx", ".xlsm", ".xls")
@@ -524,7 +553,7 @@ async def _run_import(request: Request, db: Session, file: UploadFile, fn, kind:
         except ImportError_ as e:
             db.rollback()
             error = str(e)
-    return render(request, "import.html", _import_ctx(db) | {"result": result, "error": error, "kind": kind})
+    return render(request, "import.html", _import_ctx(db) | {"result": result, "error": error, "kind": kind, "pdfs": None})
 
 
 @router.post("/import", response_class=HTMLResponse)
@@ -543,3 +572,14 @@ async def import_customers_upload(
     request: Request, file: UploadFile = File(...), db: Session = Depends(get_db), user: str = Depends(require_login)
 ):
     return await _run_import(request, db, file, import_customers, "customers")
+
+
+MAX_PDF_FILES = 200
+
+
+@router.post("/import/bill-pdfs", response_class=HTMLResponse)
+async def import_bill_pdfs(request: Request, files: list[UploadFile] = File(...), db: Session = Depends(get_db),
+                           user: str = Depends(require_login)):
+    uploads = [(f.filename or "file", await f.read()) for f in files[:MAX_PDF_FILES] if f.filename]
+    result = bills.attach_busy_pdfs(db, uploads)
+    return render(request, "import.html", _import_ctx(db) | {"result": None, "error": None, "kind": None, "pdfs": result})

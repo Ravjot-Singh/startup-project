@@ -21,6 +21,8 @@ DEFAULTS: dict[str, Callable[[], str]] = {
     "send_window_end": lambda: str(config.SEND_WINDOW_END),
     # Safety switch: when on, nothing is sent automatically.
     "sending_paused": lambda: "false",
+    # Send each new bill's PDF on WhatsApp automatically after an upload from Busy.
+    "send_bills_automatically": lambda: "true",
 }
 
 

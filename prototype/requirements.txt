@@ -12,6 +12,9 @@ httpx==0.28.1
 python-dotenv==1.0.1
 itsdangerous==2.2.0
 tzdata==2024.2
+fpdf2==2.8.1
+pillow==13.0.0
+segno==1.6.1
 
 # tests
 pytest==8.3.4
