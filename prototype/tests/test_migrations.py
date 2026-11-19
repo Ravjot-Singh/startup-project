@@ -7,6 +7,7 @@ from alembic.migration import MigrationContext
 from sqlalchemy import inspect
 
 from app.db import Base, make_engine, migrate
+from conftest import drop_everything
 
 
 def _url(tmp_path):
@@ -15,9 +16,7 @@ def _url(tmp_path):
 
 def _reset(url):
     eng = make_engine(url)
-    Base.metadata.drop_all(eng)
-    with eng.begin() as conn:
-        conn.exec_driver_sql("DROP TABLE IF EXISTS alembic_version")
+    drop_everything(eng)  # also old tables (reminder_logs) and alembic_version
     return eng
 
 
@@ -65,7 +64,8 @@ def test_0002_turns_old_payments_into_receipts(tmp_path):
                               "VALUES (1, 'A', true, false, 15, true)"))
             conn.execute(text("INSERT INTO invoices (id, customer_id, invoice_no, invoice_date, due_date, amount, amount_paid, status) "
                               "VALUES (1, 1, '101', '2026-03-20', '2026-04-04', 1000, 300, 'partial')"))
-            conn.execute(text("INSERT INTO payments (id, invoice_id, amount, paid_on, mode, note) VALUES (1, 1, 100, '2026-04-01', 'upi', 'x')"))
+            # no explicit id: on Postgres that would leave the id counter at 1 and the migration's own insert would clash
+            conn.execute(text("INSERT INTO payments (invoice_id, amount, paid_on, mode, note) VALUES (1, 100, '2026-04-01', 'upi', 'x')"))
         migrate(url)
         with eng.connect() as conn:
             receipts = conn.execute(text("SELECT source, amount, mode FROM receipts ORDER BY source")).all()

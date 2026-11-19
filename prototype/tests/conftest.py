@@ -9,22 +9,30 @@ import re
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import MetaData, create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app import config
-from app.db import Base, get_db, init_db, make_engine
+from app.db import get_db, init_db, make_engine
 from app.seed import seed_rules
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
 ADMIN_USER, ADMIN_PASS = "owner", "test-password-123"
 
 
+def drop_everything(engine) -> None:
+    """Drop every table in the database, including ones the models no longer have (e.g. reminder_logs,
+    left by a migration test that stopped half-way), so one failed test can't break the ones after it."""
+    found = MetaData()
+    found.reflect(engine)
+    found.drop_all(engine)
+
+
 def _engine():
     if TEST_DATABASE_URL:
         engine = make_engine(TEST_DATABASE_URL)
-        Base.metadata.drop_all(engine)
+        drop_everything(engine)
         return engine
     return create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
 
@@ -37,7 +45,7 @@ def db():
     seed_rules(session)
     yield session
     session.close()
-    Base.metadata.drop_all(engine)
+    drop_everything(engine)
     engine.dispose()
 
 
