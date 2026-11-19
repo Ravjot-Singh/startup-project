@@ -1,5 +1,7 @@
 import hashlib
+import re
 import secrets
+from functools import lru_cache
 from datetime import date, datetime, time
 from decimal import Decimal
 from urllib.parse import quote_plus
@@ -8,6 +10,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
@@ -110,7 +113,7 @@ def today_page(request: Request, db: Session = Depends(get_db), user: str = Depe
 
 @router.post("/reminders/run")
 def run_now(request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
-    s = run_reminders(db, get_provider())
+    s = run_reminders(db, get_provider(db))
     if s.outside_window:
         flash(request, "Nothing sent: it's outside your sending hours. Reminders go out automatically tomorrow.", "warn")
     elif s.sent or s.failed:
@@ -281,7 +284,7 @@ def undo_payment(rid: int, request: Request, db: Session = Depends(get_db), user
 @router.post("/customers/{cid}/send-now")
 def send_reminder_now(cid: int, request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
     c = db.get(Customer, cid) or _404()
-    msg = engine.send_now(db, get_provider(), c)
+    msg = engine.send_now(db, get_provider(db), c)
     if msg.is_sent:
         flash(request, f"Reminder sent to {c.display_name} for ₹{ui.inr(msg.amount_due)}.")
     elif msg.status == QUEUED:
@@ -355,7 +358,7 @@ def bill_pdf_view(iid: int, db: Session = Depends(get_db), user: str = Depends(r
 @router.post("/invoices/{iid}/send")
 def send_bill(iid: int, request: Request, db: Session = Depends(get_db), user: str = Depends(require_login)):
     inv = db.get(Invoice, iid) or _404()
-    msg = engine.send_bill_now(db, get_provider(), inv)
+    msg = engine.send_bill_now(db, get_provider(db), inv)
     if msg.is_sent:
         flash(request, f"Bill {inv.invoice_no} sent to {inv.customer.display_name}.")
     elif msg.status == QUEUED:
@@ -425,7 +428,25 @@ def settings_page(request: Request, db: Session = Depends(get_db), user: str = D
         "thanks_on": settings.get_bool(db, "send_thank_you"), "reorder_on": settings.get_bool(db, "send_reorder_invites"),
         "fallback_days": settings.get_int(db, "reorder_fallback_days"), "catalogue": followups.current_catalogue(db),
         "promo_cost": settings.get(db, "marketing_message_cost"), "promo_batch": settings.get_int(db, "promo_batch_size"),
+        "group_phones": ", ".join(n[2:] if len(n) == 12 and n.startswith("91") else n for n in sorted(settings.test_group_phones(db))),
     })
+
+
+GUIDE_PATH = config.PROJECT_DIR / "docs" / "owner-guide.md"
+
+
+@lru_cache(maxsize=1)
+def _guide_html() -> Markup:
+    import markdown
+
+    text = GUIDE_PATH.read_text(encoding="utf-8")
+    text = text.split("\n", 1)[1] if text.startswith("# ") else text  # the page has its own heading
+    return Markup(markdown.markdown(text, extensions=["tables"]))
+
+
+@router.get("/help", response_class=HTMLResponse)
+def help_page(request: Request, user: str = Depends(require_login)):
+    return render(request, "help.html", {"guide": _guide_html()})
 
 
 @router.post("/settings/followups")
@@ -477,6 +498,33 @@ def toggle_pause(request: Request, db: Session = Depends(get_db), user: str = De
     settings.set_value(db, "sending_paused", paused)
     flash(request, "Automatic sending paused. Nothing goes out until you resume." if paused
           else "Automatic sending resumed.", "warn" if paused else "ok")
+    return redirect("/settings")
+
+
+@router.post("/settings/test-group")
+def save_test_group(request: Request, mode: str = Form("everyone"), phones: str = Form(""),
+                    db: Session = Depends(get_db), user: str = Depends(require_login)):
+    numbers, bad = [], []
+    for part in re.split(r"[,;\n]", phones):
+        if not part.strip():
+            continue
+        if n := normalize_phone(part):
+            numbers.append(n)
+        else:
+            bad.append(part.strip())
+    if bad:
+        flash(request, f"Not a mobile number: {', '.join(bad[:5])}. Nothing was changed.", "error")
+        return redirect("/settings")
+    if mode == "group" and not numbers:
+        flash(request, "Add at least one number for the test group.", "error")
+        return redirect("/settings")
+    settings.set_value(db, "test_group_phones", ",".join(dict.fromkeys(numbers)))
+    settings.set_value(db, "test_group_only", mode == "group")
+    if mode == "group":
+        n = len(set(numbers))
+        flash(request, f"Saved. Real messages go only to {n} test number{'s' if n != 1 else ''}.")
+    else:
+        flash(request, "Saved. Real messages go to everyone.")
     return redirect("/settings")
 
 

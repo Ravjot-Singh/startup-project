@@ -1,8 +1,9 @@
 # Render Blueprint (set the Blueprint path to prototype/render.yaml): free web service. The database is Neon (free Postgres), not Render's.
-# Setup steps: docs/deploy-staging.md
+# Setup steps: docs/deploy.md (online in test mode) and docs/go-live.md (connecting WhatsApp).
+# Every setting is explained in .env.example.
 services:
   - type: web
-    name: payment-reminders-staging
+    name: payment-reminders
     runtime: python
     rootDir: prototype # the app lives in the prototype/ folder of the repo
     plan: free
@@ -19,7 +20,7 @@ services:
       - key: TIMEZONE
         value: Asia/Kolkata
       - key: WHATSAPP_PROVIDER
-        value: dryrun # staging never sends real messages
+        sync: false # type dryrun (test mode) at first; change to meta when WhatsApp is connected (docs/go-live.md)
       - key: LOCAL_SCHEDULER
         value: "false" # cron-job.org calls /jobs/tick instead
       - key: SESSION_SECRET
@@ -36,3 +37,5 @@ services:
         sync: false
       - key: BUSINESS_UPI_ID
         sync: false
+      # Added later in the Environment tab, once WhatsApp is connected (docs/go-live.md):
+      # META_WA_TOKEN, META_WA_PHONE_NUMBER_ID, META_APP_SECRET, META_WA_VERIFY_TOKEN, META_WA_TEMPLATE_LANG

@@ -122,10 +122,10 @@
   <div class="card-head">
     <h2 id="outgoing">Going out today</h2>
     <span class="status-line small muted">
-      {% if v.status.paused %}<span class="badge paused">Paused</span>{% elif v.status.test_mode %}<span class="badge dryrun">Test mode</span>{% else %}<span class="badge ok">Automatic</span>{% endif %}
+      {% if v.status.paused %}<span class="badge paused">Paused</span>{% elif v.status.test_mode %}<span class="badge dryrun">Test mode</span>{% elif v.status.live_for_test_group %}<span class="badge dryrun">Test group only</span>{% else %}<span class="badge ok">Automatic</span>{% endif %}
     </span>
   </div>
-  <p class="muted small">{{ v.status.summary }}.{% if v.status.test_mode %} Test mode: messages are recorded but not actually sent on WhatsApp.{% endif %}</p>
+  <p class="muted small">{{ v.status.summary }}.{% if v.status.test_mode %} Test mode: messages are recorded but not actually sent on WhatsApp.{% elif v.status.live_for_test_group %} Only your test group gets real messages; the rest are recorded but not sent (<a href="/settings#test-group">change</a>).{% endif %}</p>
   {% if v.outgoing %}
   <ul class="list">
     {% for o in v.outgoing %}

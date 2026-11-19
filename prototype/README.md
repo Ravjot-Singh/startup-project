@@ -12,7 +12,7 @@ The idea behind the project is in [../idea.md](../idea.md).
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-copy .env.example .env          # then edit .env
+copy .env.example .env          # then edit .env (every setting is explained there)
 python -m app.seed --demo       # optional: sample customers & invoices
 uvicorn app.main:app --reload
 ```
@@ -29,7 +29,14 @@ desktop size, in light and dark mode. It needs the dev tools and is skipped with
 The database schema is managed by Alembic (`migrations/`) and is upgraded automatically on start. After
 changing `app/models.py`, create a migration with `alembic revision --autogenerate -m "what changed"`.
 
-Free-tier staging (Render + Neon + cron-job.org): see [docs/deploy-staging.md](docs/deploy-staging.md).
+**Guides**
+- [docs/owner-guide.md](docs/owner-guide.md): how the owner uses the app day to day (also inside the app: Settings → *How to use the app*).
+- [docs/deploy.md](docs/deploy.md): putting it online on free tiers (Render + Neon + cron-job.org) with a nightly encrypted backup.
+- [docs/go-live.md](docs/go-live.md): connecting WhatsApp, going live step by step (test mode → test group → everyone), and the smoke checklist.
+- [docs/whatsapp-templates.md](docs/whatsapp-templates.md): the message templates to submit to Meta.
+
+Check any configuration (your `.env`, or the server's) with `python -m app.check`: it tests the database
+connection and, once connected, the WhatsApp number, and never prints secrets.
 
 ## How it works
 
@@ -88,16 +95,20 @@ Free-tier staging (Render + Neon + cron-job.org): see [docs/deploy-staging.md](d
 
 ## Going live on WhatsApp
 
-`WHATSAPP_PROVIDER=dryrun` (default) only logs messages. To send for real:
+`WHATSAPP_PROVIDER=dryrun` (the default) is test mode: every message is written and listed on the Messages
+page, nothing is sent. The full steps (Meta account, templates, token, webhook, then test mode → test group →
+five customers → everyone) and a smoke checklist are in [docs/go-live.md](docs/go-live.md). In short:
 
-1. Create a Meta Business account and a WhatsApp Business app at developers.facebook.com, add a phone number.
-2. In WhatsApp Manager create the templates listed in [docs/whatsapp-templates.md](docs/whatsapp-templates.md)
-   (same names, text, category and header type) and wait for approval.
-3. Set `WHATSAPP_PROVIDER=meta`, `META_WA_TOKEN` (permanent system-user token), `META_WA_PHONE_NUMBER_ID`.
-4. Deploy on a public HTTPS URL and set the webhook to `https://<domain>/webhooks/whatsapp` with
-   `META_WA_VERIFY_TOKEN`; subscribe to `messages`. Also set `META_APP_SECRET` (App settings → Basic) so the
-   app can verify each webhook's `X-Hub-Signature-256`; in production, unsigned webhooks are refused. Delivery/read ticks and customer replies then show
-   on the Reminders page.
+- `WHATSAPP_PROVIDER=meta` plus `META_WA_TOKEN`, `META_WA_PHONE_NUMBER_ID`, `META_APP_SECRET` and
+  `META_WA_VERIFY_TOKEN`; the webhook is `https://<domain>/webhooks/whatsapp`, subscribed to `messages`.
+  In production, webhooks without a valid `X-Hub-Signature-256` are refused.
+- **Settings → Who gets real messages → Only these numbers** (`TestGroupProvider` in
+  `app/whatsapp/provider.py`): real messages go only to the listed numbers; the rest are handled like test
+  mode. Used for the first live days.
+- On Postgres, an advisory lock stops two overlapping ticks from sending the same message (`app/jobs.py`).
+- `python -m app.check` checks the configuration, database and WhatsApp connection (`app/check.py`).
+- A nightly encrypted `pg_dump` backup runs in GitHub Actions (`.github/workflows/backup.yml`, see
+  [docs/deploy.md](docs/deploy.md#4-daily-backup-github-actions)).
 
 ## Not done yet
 

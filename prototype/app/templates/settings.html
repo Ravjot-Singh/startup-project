@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Settings{% endblock %}
 {% block content %}
-<div class="page-head"><h1>Settings</h1></div>
+<div class="page-head"><h1>Settings</h1><a class="btn secondary" href="/help">How to use the app</a></div>
 
 <section class="card" aria-labelledby="sending">
   <div class="card-head">
@@ -33,6 +33,32 @@
     </form>
     <p class="muted small">Reminders you set for a specific time, and retries, also wait for these hours. “Send reminder now” on a customer's page goes straight away.</p>
   </details>
+</section>
+
+<section class="card section" aria-labelledby="group-h" id="test-group">
+  <div class="card-head">
+    <h2 id="group-h">Who gets real messages</h2>
+    {% if status.test_mode %}<span class="badge dryrun">Nobody yet (test mode)</span>
+    {% elif status.test_group is not none %}<span class="badge dryrun">Test group only</span>
+    {% else %}<span class="badge ok">Everyone</span>{% endif %}
+  </div>
+  {% if status.test_mode %}
+  <p class="muted small">The app is in test mode, so nothing is sent on WhatsApp yet. When WhatsApp is connected, you can start with a few people you trust before switching to everyone.</p>
+  {% else %}
+  <p class="muted small">For the first days on WhatsApp, send real messages only to a few numbers (your own, a family member, friendly customers). Messages for everyone else are written and listed on the Messages page as “Test mode”, but not sent.</p>
+  {% endif %}
+  <form method="post" action="/settings/test-group" class="section">{{ csrf_input(request) }}
+    <fieldset class="split">
+      <legend>Send real messages to</legend>
+      <label class="check"><input type="radio" name="mode" value="everyone" {{ 'checked' if status.test_group is none }}> Everyone</label>
+      <label class="check"><input type="radio" name="mode" value="group" {{ 'checked' if status.test_group is not none }}> Only these numbers</label>
+    </fieldset>
+    <div class="form-grid section">
+      <div class="field"><label for="group-phones">Test numbers <span class="help">(comma separated)</span></label>
+        <input id="group-phones" name="phones" value="{{ group_phones }}" maxlength="500" inputmode="tel" placeholder="98765 43210, 98111 22233"></div>
+      <div class="field"><button>Save</button></div>
+    </div>
+  </form>
 </section>
 
 <section class="card section" aria-labelledby="billsend">
@@ -121,6 +147,7 @@
 <section class="card section" aria-labelledby="account">
   <h2 id="account">Account</h2>
   <p class="muted">Logged in as {{ user }}.</p>
+  <p><a href="/help">How to use the app</a></p>
   <form method="post" action="/logout">{{ csrf_input(request) }}<button class="secondary">Log out</button></form>
 </section>
 {% endblock %}

@@ -35,6 +35,10 @@ DEFAULTS: dict[str, Callable[[], str]] = {
     "marketing_message_cost": lambda: "0.80",
     # Promotion messages sent per tick (every ~10 min), to stay well inside WhatsApp's sending limits.
     "promo_batch_size": lambda: "40",
+    # First live days: when on, real WhatsApp messages go only to the numbers below; everyone else is
+    # handled like test mode (written and listed, not sent). Numbers are stored as 91XXXXXXXXXX, comma separated.
+    "test_group_only": lambda: "false",
+    "test_group_phones": lambda: "",
 }
 
 
@@ -66,6 +70,10 @@ def set_value(db: Session, key: str, value: str | int | bool) -> None:
     else:
         db.add(AppSetting(key=key, value=text))
     db.commit()
+
+
+def test_group_phones(db: Session) -> set[str]:
+    return {p for p in get(db, "test_group_phones").split(",") if p}
 
 
 def all_settings(db: Session) -> dict[str, str]:

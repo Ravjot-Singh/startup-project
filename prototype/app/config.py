@@ -28,7 +28,20 @@ def normalize_db_url(url: str) -> str:
 APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
 IS_PRODUCTION = APP_ENV == "production"
 
-DATABASE_URL = normalize_db_url(os.getenv("DATABASE_URL", f"sqlite:///{(PROJECT_DIR / 'reminders.db').as_posix()}"))
+# Postgres (Neon) connection string. Empty or unset = a local SQLite file, prototype/reminders.db.
+LOCAL_SQLITE_URL = f"sqlite:///{(PROJECT_DIR / 'reminders.db').as_posix()}"
+
+
+def resolve_database_url(raw: str | None) -> str:
+    return normalize_db_url((raw or "").strip().strip("'\"") or LOCAL_SQLITE_URL)
+
+
+def default_local_scheduler(is_production: bool, uses_sqlite: bool) -> bool:
+    return not is_production and uses_sqlite
+
+
+DATABASE_URL = resolve_database_url(os.getenv("DATABASE_URL"))
+USES_SQLITE = DATABASE_URL.startswith("sqlite")
 
 # All dates/times in the app are in this zone, whatever the server clock is set to.
 TIMEZONE = os.getenv("TIMEZONE", "Asia/Kolkata")
@@ -53,8 +66,9 @@ META_APP_SECRET = os.getenv("META_APP_SECRET", "")
 # Empty = the endpoint is switched off.
 TICK_TOKEN = os.getenv("TICK_TOKEN", "")
 # Run the tick in-process every few minutes (handy locally). Off in production, where the
-# free host sleeps and the external cron does the waking.
-LOCAL_SCHEDULER = _bool("LOCAL_SCHEDULER", not IS_PRODUCTION)
+# free host sleeps and the external cron does the waking. Also off by default when a local copy
+# points at a shared Postgres database (e.g. the live Neon one), so it doesn't send alongside the server.
+LOCAL_SCHEDULER = _bool("LOCAL_SCHEDULER", default_local_scheduler(IS_PRODUCTION, USES_SQLITE))
 
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "change-me")

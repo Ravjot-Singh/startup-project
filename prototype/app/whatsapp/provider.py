@@ -128,7 +128,29 @@ def _meta_provider(token: str, phone_number_id: str, lang: str) -> MetaCloudProv
     return MetaCloudProvider(token, phone_number_id, lang)
 
 
-def get_provider() -> WhatsAppProvider:
-    if config.WHATSAPP_PROVIDER == "meta":
-        return _meta_provider(config.META_WA_TOKEN, config.META_WA_PHONE_NUMBER_ID, config.META_WA_TEMPLATE_LANG)
-    return DryRunProvider()
+class TestGroupProvider:
+    """For the first live days: real WhatsApp messages only to a few chosen numbers.
+
+    Everyone else is handled exactly like test mode: the message is written and listed, but not sent.
+    """
+
+    def __init__(self, real: WhatsAppProvider, phones: set[str]):
+        self.real, self.phones, self.dry = real, phones, DryRunProvider()
+        self.name = real.name
+
+    def send_template(self, to: str, template_name: str, params: list[str], media: MediaFile | None = None) -> SendResult:
+        target = self.real if to in self.phones else self.dry
+        return target.send_template(to, template_name, params, media=media)
+
+
+def get_provider(db=None) -> WhatsAppProvider:
+    """The sender to use. Pass the database session so the owner's "test group only" setting applies."""
+    if config.WHATSAPP_PROVIDER != "meta":
+        return DryRunProvider()
+    real = _meta_provider(config.META_WA_TOKEN, config.META_WA_PHONE_NUMBER_ID, config.META_WA_TEMPLATE_LANG)
+    if db is not None:
+        from app import settings
+
+        if settings.get_bool(db, "test_group_only"):
+            return TestGroupProvider(real, settings.test_group_phones(db))
+    return real

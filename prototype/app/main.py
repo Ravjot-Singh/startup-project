@@ -21,7 +21,7 @@ LOCAL_TICK_MINUTES = 10
 
 def local_tick() -> None:
     with SessionLocal() as db:
-        run_tick(db, get_provider())
+        run_tick(db, get_provider(db))
 
 
 @asynccontextmanager

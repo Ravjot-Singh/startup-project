@@ -153,7 +153,7 @@ def test_pages_have_no_serious_accessibility_problems(server, browser, viewport,
     page.wait_for_url(f"{base}/")
 
     for path in ["/", "/customers", f"/customers/{server['customer_id']}", "/call-list?days=0", "/messages",
-                 "/settings", "/rules", "/import", "/promotions", "/promotions/new", "/promotions/1", "/products",
+                 "/settings", "/help", "/rules", "/import", "/promotions", "/promotions/new", "/promotions/1", "/products",
                  "/catalogues", "/leads"]:
         page.goto(base + path)
         page.evaluate("document.querySelectorAll('details').forEach(d => d.open = true)")  # check folded content too
@@ -174,7 +174,7 @@ def test_phone_layout_has_no_sideways_scrolling(server, browser):
     page.wait_for_url(f"{base}/")
     wide = {}
     for path in ["/", "/customers", f"/customers/{server['customer_id']}", "/call-list?days=0", "/messages", "/settings", "/import",
-                 "/promotions", "/promotions/new", "/promotions/1", "/products", "/catalogues", "/leads"]:
+                 "/promotions", "/promotions/new", "/promotions/1", "/products", "/catalogues", "/leads", "/help"]:
         page.goto(base + path)
         page.evaluate("document.querySelectorAll('details').forEach(d => d.open = true)")
         overflow = page.evaluate("document.documentElement.scrollWidth - window.innerWidth")

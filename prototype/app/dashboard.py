@@ -60,6 +60,11 @@ class SendingStatus:
     run_hour: int
     window_start: int
     window_end: int
+    test_group: int | None = None  # number of test numbers when "test group only" is on, else None
+
+    @property
+    def live_for_test_group(self) -> bool:
+        return not self.test_mode and self.test_group is not None
 
     @property
     def summary(self) -> str:
@@ -116,6 +121,7 @@ def sending_status(db: Session) -> SendingStatus:
         run_hour=settings.get_int(db, "reminder_run_hour"),
         window_start=settings.get_int(db, "send_window_start"),
         window_end=settings.get_int(db, "send_window_end"),
+        test_group=len(settings.test_group_phones(db)) if settings.get_bool(db, "test_group_only") else None,
     )
 
 

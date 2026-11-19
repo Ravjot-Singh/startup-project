@@ -23,4 +23,4 @@ def tick(request: Request, db: Session = Depends(get_db)):
     supplied = request.headers.get("X-Tick-Token", "")
     if not secrets.compare_digest(supplied.encode(), config.TICK_TOKEN.encode()):
         raise HTTPException(status_code=403, detail="Bad tick token")
-    return run_tick(db, get_provider())
+    return run_tick(db, get_provider(db))

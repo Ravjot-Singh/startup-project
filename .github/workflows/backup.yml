@@ -1,0 +1,68 @@
+name: database backup
+
+# A daily copy of the live database, kept for 30 days as an encrypted file under this workflow's runs
+# (Actions -> database backup -> a run -> Artifacts). How to set it up and restore: prototype/docs/deploy.md
+#
+# Needs two repository secrets (Settings -> Secrets and variables -> Actions):
+#   BACKUP_DATABASE_URL  the Neon connection string (same as DATABASE_URL on Render)
+#   BACKUP_PASSPHRASE    a long passphrase; keep it somewhere safe, without it the backups can't be opened
+# Without them the job does nothing (so it stays green on forks and before setup).
+#
+# GitHub runs scheduled workflows only from the default branch (main).
+
+on:
+  schedule:
+    - cron: "30 21 * * *" # 21:30 UTC = 03:00 India time
+  workflow_dispatch: # "Run workflow" button for a backup right now
+
+permissions:
+  contents: read
+
+concurrency:
+  group: database-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+      BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+    steps:
+      - name: Check the secrets are set
+        id: ready
+        run: |
+          if [ -z "$DATABASE_URL" ] || [ -z "$BACKUP_PASSPHRASE" ]; then
+            echo "::notice::Backups are not set up yet: add BACKUP_DATABASE_URL and BACKUP_PASSPHRASE as repository secrets."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Dump the database
+        if: steps.ready.outputs.ok == 'true'
+        # pg_dump from the official Postgres image; a newer pg_dump can back up older servers
+        run: |
+          docker run --rm -e DATABASE_URL postgres:18-alpine \
+            pg_dump --dbname="$DATABASE_URL" --format=custom --no-owner --no-privileges > backup.dump
+          test -s backup.dump
+          echo "Backup size: $(du -h backup.dump | cut -f1)"
+
+      - name: Encrypt it
+        if: steps.ready.outputs.ok == 'true'
+        # the file holds customers' names, numbers and balances, so it is never uploaded unencrypted
+        run: |
+          printf '%s' "$BACKUP_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 \
+            --symmetric --cipher-algo AES256 --output backup.dump.gpg backup.dump
+          rm backup.dump
+          echo "NAME=db-backup-$(TZ=Asia/Kolkata date +%Y-%m-%d)" >> "$GITHUB_ENV"
+
+      - name: Keep it for 30 days
+        if: steps.ready.outputs.ok == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.NAME }}
+          path: backup.dump.gpg
+          retention-days: 30
+          if-no-files-found: error
